@@ -78,7 +78,10 @@ function titleOf(node: TreeNode) {
 
 interface Figures extends Disk {
   home: number
+  root?: number
 }
+
+export const READING = 'Reading the disk…'
 
 interface FolderCardProps {
   node: TreeNode | null
@@ -164,11 +167,14 @@ function branchFocus<T extends {id: string; ancestorIds: readonly string[]}, X e
 
 function Reconciliation({data}: {data: Figures}) {
   const {otherHint, reserved: reservedName, reservedHint, sharedBlocks} = usePlatform()
-  const other = Math.max(0, data.used - data.home)
+  const other = Math.max(0, (data.root ?? data.used) - data.home)
+  const unread = data.root === undefined ? 0 : Math.max(0, data.used - data.root)
   const reserved = Math.max(0, data.total - data.used - data.free)
+  const soFar = (name: string) => (data.root === undefined ? name : `${name} · so far`)
   const rows: [string, number, string, string][] = [
-    ['Your home folder', data.home, 'bg-blue-400', 'everything under ~, mapped above'],
-    ['Rest of the data volume', other, 'bg-zinc-500', otherHint],
+    [soFar('Your home folder'), data.home, 'bg-blue-400', 'everything under ~, mapped above'],
+    [soFar('Rest of the data volume'), other, 'bg-zinc-500', otherHint],
+    ...(unread > 0 ? [['Not read yet', unread, 'bg-zinc-700', ''] satisfies [string, number, string, string]] : []),
     [reservedName, reserved, 'bg-amber-500', reservedHint],
     ['Free right now', data.free, 'bg-emerald-500/50', ''],
   ]
@@ -284,7 +290,7 @@ function useStorageData() {
   const db = useDb()
   const scan = useScanState(db)
   const disk = useDisk(db)
-  return {data: {...disk, home: scan.home}, tree: scan.tree, cleanable: useCleanable(db)}
+  return {data: {...disk, home: scan.home}, tree: scan.tree, walked: scan.walked, cleanable: useCleanable(db)}
 }
 
 function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>, shape: Shape, focus: string) {
@@ -350,7 +356,7 @@ function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
 }
 
 export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
-  const {data, tree, cleanable} = useStorageData()
+  const {data, tree, walked, cleanable} = useStorageData()
   const home = useHome()
   const {path} = usePlatform()
   const folders = useFolders(useDb())
@@ -363,8 +369,9 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const reshape = (next: Shape) => navigate({to: '.', search: prev => ({...prev, shape: next})})
 
   if (!tree || !flat || !definition) {
-    return <div className="p-10 text-center text-sm text-muted-foreground">No storage map in this run. Re-run the scan to build one.</div>
+    return <div className="p-10 text-center text-sm text-muted-foreground">{walked ? 'No storage map in this run. Re-run the scan to build one.' : READING}</div>
   }
+  const figures = walked ? data : {...data, home: flat.byPath.get(home)?.bytes ?? 0, root: tree.bytes}
 
   const focusNode = flat.byPath.get(focus) ?? tree
   const chain = chainOf(flat.parents, focusNode)
@@ -409,7 +416,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
         </ChartBoundary>
         <Details shown={shown} focusNode={focusNode} total={data.total} cleanable={cleanable} shape={shape} />
       </div>
-      <Reconciliation data={data} />
+      <Reconciliation data={figures} />
     </div>
   )
 }

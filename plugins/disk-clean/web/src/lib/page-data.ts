@@ -341,11 +341,6 @@ export function useHome() {
   return useDb().loaded.home
 }
 
-export function useStreaming() {
-  const {live, settled} = useScan()
-  return {live, settled}
-}
-
 export function useProgress() {
   const db = useDb()
   const scan = useScanState(db)

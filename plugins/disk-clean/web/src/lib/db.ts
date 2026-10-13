@@ -28,7 +28,7 @@ export interface Request {
   retry: boolean
 }
 
-const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']
+const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'growing', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']
 const TRASH = 'trash'
 
 type Rows = {type: typeof TRASH; data: {entries: TrashEntry[]}}

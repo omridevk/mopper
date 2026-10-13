@@ -5,6 +5,7 @@ import {scaleLinear as linear} from '@tanstack/charts/scales/linear'
 import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
+import {READING} from './storage'
 import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, CopyPath, Fact, Meter, shareOf} from './chart-card'
 import {formatBytes, sumBytes, type Category, type Insights as InsightsData, untilde} from '@/lib/data'
 import {useDb} from '@/lib/db'
@@ -244,12 +245,13 @@ function SectionAge({categories}: {categories: Category[]}) {
 
 export function Insights() {
   const db = useDb()
-  const {insights} = useScanState(db)
+  const {insights, walked} = useScanState(db)
   const folders = useFolders(db)
   const categories = useCategories(db)
   const {path} = usePlatform()
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
+      {insights && !walked && <p className="col-span-2 text-sm text-muted-foreground">Still reading the disk; these numbers grow until it finishes.</p>}
       {insights ? (
         <>
           <Panel wide title="When your files last changed" hint="Bytes by last-modified day over the past year. Bright days are when the disk filled.">
@@ -263,7 +265,7 @@ export function Insights() {
           </Panel>
         </>
       ) : (
-        <p className="col-span-2 rounded-xl border p-4 text-sm text-muted-foreground">Re-run the scan to see when and what filled the disk.</p>
+        <p className="col-span-2 rounded-xl border p-4 text-sm text-muted-foreground">{walked ? 'Re-run the scan to see when and what filled the disk.' : READING}</p>
       )}
       <Panel title="Cleanup sections by idle time" hint="Bytes the Cleanup tab can act on, by days since last use.">
         <SectionAge categories={categories} />

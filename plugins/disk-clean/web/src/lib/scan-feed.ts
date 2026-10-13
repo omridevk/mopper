@@ -16,6 +16,7 @@ export type ScanEvent =
   | {type: 'disk'; data: Timed<{total: number; used: number; free: number; snapshots: number}>}
   | {type: 'progress'; data: Timed<Progress>}
   | {type: 'item'; data: Timed<{category: CategoryHead; item: Item}>}
+  | {type: 'growing'; data: Timed<{tree: TreeNode | null; insights: Insights}>}
   | {type: 'walked'; data: Timed<{home: number; tree: TreeNode | null; insights: Insights | null; worktrees: number}>}
   | {type: 'done'; data: Timed<{reclaimable: number}>}
   | {type: 'error'; data: Timed<{message: string}>}
@@ -181,6 +182,9 @@ const HANDLERS: Handlers = {
     batch.progress = {id: 'progress', files, bytes, dir}
   },
   item: takeItem,
+  growing: (batch, {tree, insights}) => {
+    batch.state = {...batch.state, tree: tree ?? batch.state.tree, insights}
+  },
   walked: (batch, {home, tree, insights, worktrees, elapsed_ms}) => {
     batch.state = {...batch.state, home, tree, insights, worktrees, walked: true, walkedAt: elapsed_ms}
   },
