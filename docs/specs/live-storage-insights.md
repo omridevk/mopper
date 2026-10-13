@@ -22,12 +22,14 @@ Both tabs wait for the end of the one disk walk:
 ### Rust: a `growing` event about once a second during the walk
 
 - The walk's `progress` callback (called every 4096 entries, `walk.rs:620`) also receives the open
-  folders: the frames on `consume`'s stack, each `(path, blocks, files, mtime, depth)`. An open
-  folder's `blocks` is its own files plus its finished children, so it only grows.
+  folders: the frames on `consume`'s stack that pass `pop`'s "mapped" rule, as rows shaped like
+  `Walk.map`. That rule moves into one function in `walk.rs` used by both `pop` and the progress
+  call. An open folder's `blocks` is its own files plus its finished children, so it only grows.
+  The list is empty exactly when no map is being built (`map_depth` is `None` after the first walk,
+  `scan.rs:290`), which is how the callback knows to send `tree: null`.
 - In `scan.rs`, the callback emits `growing` at most once a second (its own `Instant`, separate from
   `progress`'s throttle): `{tree, insights}`.
-  - `tree`: the finished folders in `Walk.map` plus the open frames that pass the same rule as `pop`
-    (depth 0, or at least `map_min_kb` and depth up to `map_depth`). A folder's parent is always
+  - `tree`: the finished folders in `Walk.map` plus those open rows. A folder's parent is always
     either finished or open, and an open parent's partial size is at least any finished child's,
     so the tree stays connected under the same cutoff.
   - The tree is built by the code `load_map` uses today: split `load_map` into reading `map.tsv`
@@ -47,25 +49,28 @@ Both tabs wait for the end of the one disk walk:
 
 ### Page
 
-- `scan-feed.ts`: a `growing` handler sets `tree` and `insights` on the scan state; `walked` still
-  sets them and `walked: true`. Add `growing` to `SCAN_TYPES` (`lib/db.ts:31`) and to the event
+- `scan-feed.ts`: a `growing` handler sets `insights`, and sets `tree` only when the event's `tree`
+  is not null (the extra-drive walks send `tree: null` after the data-volume walk; the tree from the
+  first walk stays). `walked` still sets both and `walked: true`. Add `growing` to `SCAN_TYPES` (`lib/db.ts:31`) and to the event
   union.
 - Storage while `!scan.walked` and a tree is present:
   - The chart and inspector work as normal on the partial tree (zoom, hover, breadcrumbs). A
     zoomed folder that is not in the next snapshot yet keeps the current focus logic
     (`focusOf` falls back to the root).
-  - The reconciliation rows say "so far" ("Your home folder · so far"), and one extra row "Not read
-    yet" shows `used - (home so far + rest so far + reserved)` while it is above 0. Disk total,
-    used and free come from the `disk` event and are exact from the start.
+  - The reconciliation rows say "so far". `scan.home` is only set by `walked`, so during the walk
+    "Your home folder · so far" is the size of the home node in the growing tree, "Rest of the data
+    volume · so far" is the root's size so far minus that, and one extra row "Not read yet" is
+    `used - root so far` while it is above 0. The reserve stays `total - used - free` (outside
+    `used`), so the rows still add up to the total. Disk total, used and free come from the `disk`
+    event and are exact from the start. After `walked` the rows are exactly today's.
   - No tree yet (first second of the walk): "Reading the disk ..." instead of "No storage map in
     this run". The "Re-run the scan" text stays for a finished scan with no map.
 - Insights while `!scan.walked` and insights are present: the charts render from the snapshot, and
   the tab header says "Still reading the disk; these numbers grow until it finishes." No insights
   yet: the same "Reading the disk ..." line instead of "Re-run the scan ...".
-- The overview share card stays available only once the scan has finished (unchanged): a share
-  image never shows partial numbers.
-- Chart redraws on each snapshot: no enter animation on updates after the first, so the sunburst
-  grows in place rather than replaying its intro every second.
+- Chart redraws on each snapshot without replaying its intro. The renderer is already
+  `motion({initial: false})` (`storage.tsx:33`); confirm at runtime and change code only if it
+  replays.
 
 ## Not changing
 
@@ -80,8 +85,9 @@ events, the Cleanup tab's streaming, and the 200 MB / depth 5 map defaults.
   accumulator is still usable.
 - Rust: `Live` keeps one non-empty `growing` entry in the backlog after several emits.
 - Page (roles and text only): feed `disk`, two `growing`, then `walked`; Storage shows the chart
-  and "so far" labels and the "Not read yet" row before `walked`, and neither after; Insights shows
-  the still-reading line before `walked` only; the overview share card is disabled until the scan
-  finishes. Add the test file to the Firefox `app` include list in `vite.config.ts`.
+  and "so far" labels and the "Not read yet" row before `walked`, and neither after; a `growing`
+  with `tree: null` keeps the earlier tree; Insights shows the still-reading line before `walked`
+  only. (The overview share card lives on the `share-card` branch; its own spec already makes it
+  wait for the finished scan.) Add the test file to the Firefox `app` include list in `vite.config.ts`.
 - Runtime: run `review` on this machine, open Storage during the walk, check it grows, check the
   console has no errors, and check the final tree equals a run of the released binary.
