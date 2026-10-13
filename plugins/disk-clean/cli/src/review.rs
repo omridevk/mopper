@@ -185,23 +185,35 @@ pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
     if !path.exists() {
         return None;
     }
+    let rows = util::read_lines(&path)
+        .iter()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('\t').collect();
+            let (size, files, mtime, p) = match parts.as_slice() {
+                [size, p] => (*size, "0", "0", *p),
+                [size, files, mtime, p] => (*size, *files, *mtime, *p),
+                _ => return None,
+            };
+            let n = size.trim().parse::<i64>().ok()?;
+            Some((
+                n,
+                files.parse().unwrap_or(0),
+                mtime.parse().unwrap_or(0),
+                p.to_string(),
+            ))
+        })
+        .collect();
+    map_tree(rows, home, used)
+}
+
+pub fn map_tree(rows: Vec<(i64, i64, i64, String)>, home: &str, used: i64) -> Option<Node> {
     let mut sizes: HashMap<String, i64> = HashMap::new();
     let mut stats: HashMap<String, (i64, i64)> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
-    for line in util::read_lines(&path) {
-        let parts: Vec<&str> = line.split('\t').collect();
-        let (size, files, mtime, p) = match parts.as_slice() {
-            [size, p] => (*size, "0", "0", *p),
-            [size, files, mtime, p] => (*size, *files, *mtime, *p),
-            _ => continue,
-        };
-        let Ok(n) = size.trim().parse::<i64>() else {
-            continue;
-        };
-        let stat = (files.parse().unwrap_or(0), mtime.parse().unwrap_or(0));
-        stats.insert(p.to_string(), stat);
-        if sizes.insert(p.to_string(), n).is_none() {
-            order.push(p.to_string());
+    for (n, files, mtime, p) in rows {
+        stats.insert(p.clone(), (files, mtime));
+        if sizes.insert(p.clone(), n).is_none() {
+            order.push(p);
         }
     }
     let root = order
@@ -396,6 +408,14 @@ impl Sink for Live {
             *lock(&self.finished) = Some(Arc::new(listed_in(&self.dir)));
         }
         let mut log = lock(&self.log);
+        if event == "growing"
+            && let Some(i) = log
+                .events
+                .iter()
+                .rposition(|e| e.starts_with("event: growing\n"))
+        {
+            log.events[i].clear();
+        }
         log.events.push(format!("event: {event}\ndata: {data}\n\n"));
         if event == "done" || event == "error" {
             self.scanning.store(false, Ordering::SeqCst);
@@ -991,4 +1011,23 @@ pub fn run(run_dir: Option<String>) -> io::Result<i32> {
         println!("{}", util::shown(&path));
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_keeps_one_growing_snapshot_in_the_backlog() {
+        let live = Live::new(Path::new("."));
+        for n in 0..4 {
+            live.emit("growing", json!({"n": n}));
+            live.emit("unlisted", json!({"path": n}));
+        }
+        let (_, len, replay) = backlog(&live);
+        assert_eq!(len, 8);
+        assert_eq!(replay.matches("event: growing").count(), 1);
+        assert!(replay.contains(r#"data: {"n":3}"#));
+        assert_eq!(replay.matches("event: unlisted").count(), 4);
+    }
 }

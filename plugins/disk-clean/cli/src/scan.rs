@@ -6,6 +6,7 @@ use crate::util::{self, tilde};
 use crate::walk::{self, Plan, Walk};
 use crate::worktrees;
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub type Row = [String; 13];
 
@@ -270,7 +271,7 @@ fn run_walk(
     home: &str,
     tmp_base: Option<&str>,
     mount: &Path,
-    progress: &dyn Fn(&Walk, &Path),
+    progress: &dyn Fn(&Walk, &Path, &[walk::Open]),
 ) -> Walk {
     let mut out = Walk::default();
     let mut seen = HashSet::new();
@@ -443,6 +444,20 @@ fn users(rows: Vec<Row>, home: &str) -> Vec<Row> {
         .collect()
 }
 
+fn map_rows<'a>(
+    map: impl IntoIterator<Item = walk::Open<'a>>,
+    min_kb: u64,
+) -> Vec<(i64, i64, i64, String)> {
+    map.into_iter()
+        .filter_map(|(p, blocks, files, mtime)| {
+            let kb = blocks.div_ceil(2);
+            let s = platform::path_text(p)?;
+            (kb >= min_kb || util::is_root(&s))
+                .then(|| ((kb * 1024) as i64, files as i64, mtime, s))
+        })
+        .collect()
+}
+
 fn interrupted() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "scan cancelled")
 }
@@ -489,12 +504,34 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         cancel: Arc::clone(&cancel),
         started,
     });
-    let progress = |w: &Walk, dir: &Path| {
+    let min_kb = cfg.map_min_bytes / 1024;
+    let grown = Cell::new(Instant::now());
+    let progress = |w: &Walk, dir: &Path, open: &[walk::Open]| {
         emit(
             sink,
             started,
             "progress",
             json!({"files": w.files, "bytes": w.bytes, "dir": dir.to_string_lossy()}),
+        );
+        if grown.get().elapsed() < GROWING_EVERY {
+            return;
+        }
+        grown.set(Instant::now());
+        let finished = w.map.iter().map(|(p, b, f, m)| (p.as_path(), *b, *f, *m));
+        let tree = (!open.is_empty())
+            .then(|| {
+                review::map_tree(
+                    map_rows(finished.chain(open.iter().copied()), min_kb),
+                    &home,
+                    0,
+                )
+            })
+            .flatten();
+        emit(
+            sink,
+            started,
+            "growing",
+            json!({"tree": tree, "insights": insights::to_json(&w.insights, &days, now, &home)}),
         );
     };
     let walk_ctx: OnceLock<Ctx> = OnceLock::new();
@@ -595,7 +632,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         if too_deep > 0 {
             eprintln!("  skipped {too_deep} folders nested too deep to read");
         }
-        let insights = insights::to_json(std::mem::take(&mut walked.insights), &days, now, home);
+        let insights = insights::to_json(&walked.insights, &days, now, home);
         let finished_early = {
             let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
             let _ = walk_ctx.set(Ctx {
@@ -620,19 +657,15 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         settle(&rows, out, sink);
         show_worktrees(ctx, &finished_early);
 
-        let mut map = String::new();
-        if !cfg.skip_map {
-            let min_kb = cfg.map_min_bytes / 1024;
-            for (p, blocks, files, mtime) in &ctx.walk.map {
-                let kb = blocks.div_ceil(2);
-                let Some(s) = platform::path_text(p) else {
-                    continue;
-                };
-                if kb >= min_kb || util::is_root(&s) {
-                    map.push_str(&format!("{}\t{files}\t{mtime}\t{s}\n", kb * 1024));
-                }
-            }
-        }
+        let finished = ctx
+            .walk
+            .map
+            .iter()
+            .map(|(p, b, f, m)| (p.as_path(), *b, *f, *m));
+        let map: String = map_rows(finished, min_kb)
+            .into_iter()
+            .map(|(bytes, files, mtime, s)| format!("{bytes}\t{files}\t{mtime}\t{s}\n"))
+            .collect();
         util::write_atomic(&run_dir.join("map.tsv"), map.as_bytes())?;
         util::write_atomic(
             &run_dir.join("insights.json"),
@@ -713,6 +746,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
     })
 }
 
+const GROWING_EVERY: Duration = Duration::from_secs(1);
 const DOCKER_KEY: &str = "cmd:docker-prune";
 pub(crate) const SIMS_KEY: &str = "cmd:xcode-unavailable-sims";
 

@@ -120,7 +120,7 @@ fn a_future_mtime_never_becomes_the_newest_change_of_its_parents() {
         false,
         &mut HashSet::new(),
         &mut out,
-        &|_, _| {},
+        &|_, _, _| {},
     );
     let newest = |p: &Path| {
         out.map

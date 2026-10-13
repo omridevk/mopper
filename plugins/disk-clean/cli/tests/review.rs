@@ -303,6 +303,16 @@ fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
     reader
 }
 
+fn latest_growing(events: &[(String, Value)]) -> Vec<(String, Value)> {
+    let last = events.iter().rposition(|(n, _)| n == "growing");
+    events
+        .iter()
+        .enumerate()
+        .filter(|(i, (n, _))| n != "growing" || Some(*i) == last)
+        .map(|(_, e)| e.clone())
+        .collect()
+}
+
 const EVENTS_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn read_until(reader: &mut BufReader<TcpStream>, until: &str) -> Vec<(String, Value)> {
@@ -371,7 +381,7 @@ fn review_without_run_dir_streams_the_scan() {
     assert!(page.contains(&token));
     assert_eq!(get(port, "/events?token=wrong").0, 403);
 
-    let mut first = events(port, &token, "walked");
+    let mut first = latest_growing(&events(port, &token, "walked"));
     let run = live_run(&home);
     let caught_up = events(port, &token, "replayed");
     assert!(
@@ -429,7 +439,7 @@ fn review_without_run_dir_streams_the_scan() {
     assert!(
         names[1..walked]
             .iter()
-            .all(|n| *n == "item" || *n == "progress"),
+            .all(|n| *n == "item" || *n == "progress" || *n == "growing"),
         "{names:?}"
     );
     assert!(
@@ -531,7 +541,7 @@ fn review_without_run_dir_streams_the_scan_on_linux() {
     assert!(page.contains(&token));
     assert_eq!(get(port, "/events?token=wrong").0, 403);
 
-    let mut first = events(port, &token, "walked");
+    let mut first = latest_growing(&events(port, &token, "walked"));
     let run = live_run(&home);
     let caught_up = events(port, &token, "replayed");
     assert!(
@@ -589,7 +599,7 @@ fn review_without_run_dir_streams_the_scan_on_linux() {
     assert!(
         names[1..walked]
             .iter()
-            .all(|n| *n == "item" || *n == "progress"),
+            .all(|n| *n == "item" || *n == "progress" || *n == "growing"),
         "{names:?}"
     );
     assert!(
@@ -787,7 +797,7 @@ fn rescan_restarts_the_scan_in_place() {
         replay[0].0, "rescan",
         "a reconnect replays only the current scan"
     );
-    assert_eq!(replay[1..], second[..]);
+    assert_eq!(replay[1..], latest_growing(&second)[..]);
     assert_eq!(preview(), 200);
 
     let approve = picks_body(

@@ -65,6 +65,8 @@ pub struct Walk {
     pub too_deep: u64,
 }
 
+pub type Open<'a> = (&'a Path, u64, u64, i64);
+
 const DAY: i64 = 86_400;
 
 fn plausible(mtime: i64, now: i64) -> i64 {
@@ -272,11 +274,15 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
     }
-    let mapped = f.depth == 0 || f.blocks.div_ceil(2) >= plan.map_min_kb;
-    if mapped && plan.map_depth.is_some_and(|m| f.depth <= m) {
+    if mapped(plan, &f) {
         out.map.push((f.path, f.blocks, f.files, f.mtime));
     }
     f.blocks
+}
+
+fn mapped(plan: &Plan, f: &Frame) -> bool {
+    (f.depth == 0 || f.blocks.div_ceil(2) >= plan.map_min_kb)
+        && plan.map_depth.is_some_and(|m| f.depth <= m)
 }
 
 struct Entry {
@@ -538,7 +544,7 @@ pub fn walk(
     parallel: bool,
     seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
-    progress: &dyn Fn(&Walk, &Path),
+    progress: &dyn Fn(&Walk, &Path, &[Open]),
 ) -> Option<u64> {
     let root_meta = platform::meta_at(root)?;
     let threads = platform::efficiency_cores();
@@ -599,7 +605,7 @@ fn consume(
     reader: &Reader,
     seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
-    progress: &dyn Fn(&Walk, &Path),
+    progress: &dyn Fn(&Walk, &Path, &[Open]),
 ) -> Option<u64> {
     let mut pending: Vec<(usize, std::vec::IntoIter<Entry>)> =
         vec![(0, vec![root_entry].into_iter())];
@@ -622,7 +628,12 @@ fn consume(
                 return None;
             }
             if let Some(dir) = stack.last() {
-                progress(out, &dir.path);
+                let open: Vec<_> = stack
+                    .iter()
+                    .filter(|f| mapped(plan, f))
+                    .map(|f| (f.path.as_path(), f.blocks, f.files, f.mtime))
+                    .collect();
+                progress(out, &dir.path, &open);
             }
         }
         let meta = entry.meta;
@@ -776,6 +787,6 @@ pub fn size_with(path: &Path, parallel: bool) -> Option<u64> {
         parallel,
         &mut HashSet::new(),
         &mut Walk::default(),
-        &|_, _| {},
+        &|_, _, _| {},
     )
 }

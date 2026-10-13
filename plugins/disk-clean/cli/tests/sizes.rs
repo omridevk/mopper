@@ -95,7 +95,7 @@ fn map_dirs_carry_file_count_and_newest_mtime() {
         false,
         &mut HashSet::new(),
         &mut out,
-        &|_, _| {},
+        &|_, _, _| {},
     );
     let stat = |p: &Path| {
         out.map
@@ -170,7 +170,7 @@ fn walked(root: &Path, plan: walk::Plan, parallel: bool) -> (walk::Walk, Option<
         parallel,
         &mut HashSet::new(),
         &mut out,
-        &|_, _| {},
+        &|_, _, _| {},
     );
     drop(plan);
     let mut repos: Vec<String> = repo_rx
@@ -211,8 +211,8 @@ fn bounded_parallel_walk_matches_the_serial_walk() {
     let home = root.display().to_string();
     let days = disk_clean::insights::midnights(now);
     assert_eq!(
-        disk_clean::insights::to_json(parallel.insights, &days, now, &home),
-        disk_clean::insights::to_json(serial.insights, &days, now, &home)
+        disk_clean::insights::to_json(&parallel.insights, &days, now, &home),
+        disk_clean::insights::to_json(&serial.insights, &days, now, &home)
     );
 }
 
@@ -240,5 +240,109 @@ fn map_keeps_only_directories_at_or_above_the_threshold() {
         "{} vs {}",
         all.map.len(),
         kept.map.len()
+    );
+}
+
+type Rows = Vec<(String, u64, u64, i64)>;
+
+fn rows_of<'a>(map: impl IntoIterator<Item = walk::Open<'a>>) -> Rows {
+    map.into_iter()
+        .map(|(p, b, f, m)| (p.display().to_string(), b, f, m))
+        .collect()
+}
+
+fn count(node: &disk_clean::review::Node) -> usize {
+    1 + node
+        .children
+        .iter()
+        .filter(|c| !c.rest)
+        .map(count)
+        .sum::<usize>()
+}
+
+#[test]
+fn growing_snapshots_are_connected_and_only_grow() {
+    let t = common::temp_dir("walk-growing");
+    let root = t.0.join("tree");
+    for i in 0..30 {
+        for j in 0..10 {
+            let dir = root.join(format!("t{i}/s{j}"));
+            fs::create_dir_all(&dir).unwrap();
+            for f in 0..40 {
+                fs::write(dir.join(format!("f{f}")), b"x").unwrap();
+            }
+            if (i + j) % 3 == 0 {
+                fs::write(dir.join("big"), vec![b'y'; 300 * 1024]).unwrap();
+            }
+        }
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let days = disk_clean::insights::midnights(now);
+    let home = root.display().to_string();
+    let plan = walk::Plan {
+        home: root.clone(),
+        map_depth: Some(3),
+        map_min_kb: 200,
+        now,
+        days: days.clone(),
+        ..walk::Plan::default()
+    };
+    let snapshots: std::cell::RefCell<Vec<(Rows, Rows)>> = Default::default();
+    let mut out = walk::Walk::default();
+    walk::walk(
+        &root,
+        &root,
+        &plan,
+        false,
+        &mut HashSet::new(),
+        &mut out,
+        &|w, _, open| {
+            let json = disk_clean::insights::to_json(&w.insights, &days, now, &home);
+            assert_eq!(
+                json,
+                disk_clean::insights::to_json(&w.insights, &days, now, &home)
+            );
+            let finished = rows_of(w.map.iter().map(|(p, b, f, m)| (p.as_path(), *b, *f, *m)));
+            snapshots
+                .borrow_mut()
+                .push((finished, rows_of(open.iter().copied())));
+        },
+    );
+    let snapshots = snapshots.into_inner();
+    assert!(snapshots.len() >= 2, "{} snapshots", snapshots.len());
+    let last: Rows = rows_of(out.map.iter().map(|(p, b, f, m)| (p.as_path(), *b, *f, *m)));
+    let size_in = |rows: &Rows, p: &str| rows.iter().find(|r| r.0 == p).map(|r| r.1);
+    let mut before: Rows = Vec::new();
+    for (finished, open) in &snapshots {
+        for row in finished {
+            assert!(last.contains(row), "{} changed after it finished", row.0);
+        }
+        let rows: Rows = finished.iter().chain(open).cloned().collect();
+        for (p, blocks, ..) in &rows {
+            assert!(size_in(&last, p).is_some_and(|end| end >= *blocks), "{p}");
+            assert!(
+                size_in(&before, p).is_none_or(|was| was <= *blocks),
+                "{p} shrank"
+            );
+        }
+        let tree = disk_clean::review::map_tree(
+            rows.iter()
+                .map(|(p, b, f, m)| (*b as i64 * 512, *f as i64, *m, p.clone()))
+                .collect(),
+            &home,
+            0,
+        )
+        .unwrap();
+        assert_eq!(count(&tree), rows.len());
+        before = rows;
+    }
+    assert!(last.len() < 1 + 30 + 300, "the cutoff kept every folder");
+    let json = disk_clean::insights::to_json(&out.insights, &days, now, &home);
+    assert_eq!(
+        json,
+        disk_clean::insights::to_json(&out.insights, &days, now, &home)
     );
 }

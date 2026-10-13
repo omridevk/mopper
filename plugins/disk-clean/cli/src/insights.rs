@@ -154,7 +154,7 @@ pub fn add(
     }
 }
 
-pub fn to_json(acc: Insights, days: &[i64], now: i64, home: &str) -> Value {
+pub fn to_json(acc: &Insights, days: &[i64], now: i64, home: &str) -> Value {
     let modified_by_day: Vec<Value> = acc
         .days
         .iter()
@@ -162,7 +162,7 @@ pub fn to_json(acc: Insights, days: &[i64], now: i64, home: &str) -> Value {
         .filter(|((_, files), _)| *files > 0)
         .map(|((bytes, files), m)| json!({"day": platform::day_label(*m), "bytes": bytes, "files": files}))
         .collect();
-    let mut folders = acc.folders;
+    let mut folders: Vec<&(String, [u64; 7])> = acc.folders.iter().collect();
     folders.sort_by_key(|(_, b)| Reverse(b.iter().sum::<u64>()));
     let folders: Vec<Value> = folders
         .into_iter()
@@ -177,6 +177,7 @@ pub fn to_json(acc: Insights, days: &[i64], now: i64, home: &str) -> Value {
         .collect();
     let largest: Vec<Value> = acc
         .largest
+        .clone()
         .into_sorted_vec()
         .into_iter()
         .map(|Reverse((bytes, path, mtime))| {
