@@ -24,14 +24,15 @@ Both tabs wait for the end of the one disk walk:
 - The walk's `progress` callback (called every 4096 entries, `walk.rs:620`) also receives the open
   folders: the frames on `consume`'s stack that pass `pop`'s "mapped" rule, as rows shaped like
   `Walk.map`. That rule moves into one function in `walk.rs` used by both `pop` and the progress
-  call. An open folder's `blocks` is its own files plus its finished children, so it only grows.
-  The list is empty exactly when no map is being built (`map_depth` is `None` after the first walk,
+  call. An open folder's size so far is its own `blocks` (its files plus its finished children)
+  plus every open folder below it on the stack; without that last part `/` and `/Users` sit at 0
+  while `~` is open. That size only grows, and the "mapped" rule is applied to it. The list is empty exactly when no map is being built (`map_depth` is `None` after the first walk,
   `scan.rs:290`), which is how the callback knows to send `tree: null`.
 - In `scan.rs`, the callback emits `growing` at most once a second (its own `Instant`, separate from
   `progress`'s throttle): `{tree, insights}`.
   - `tree`: the finished folders in `Walk.map` plus those open rows. A folder's parent is always
-    either finished or open, and an open parent's partial size is at least any finished child's,
-    so the tree stays connected under the same cutoff.
+    either finished or open, and an open folder's size so far is at least that of anything inside
+    it, finished or open, so the tree stays connected under the same cutoff.
   - The tree is built by the code `load_map` uses today: split `load_map` into reading `map.tsv`
     and one function that builds the `Node` from rows. Both the file path and `growing` call it; no
     second tree builder. During the walk the root keeps its partial size; the `used` substitution
