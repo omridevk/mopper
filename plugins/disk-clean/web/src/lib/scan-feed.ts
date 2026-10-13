@@ -155,7 +155,7 @@ interface Batch {
 
 type Handlers = {[K in ScanEvent['type']]: (batch: Batch, data: Extract<ScanEvent, {type: K}>['data'], store: ScanStore) => void}
 
-export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, listed: 0}
+export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, listed: 0, tree: null, insights: null, home: 0}
 
 function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item: Item}) {
   batch.heads.set(category.id, category)

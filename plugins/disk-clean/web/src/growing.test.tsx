@@ -62,6 +62,22 @@ describe('Storage and Insights grow while the disk is walked', () => {
     await expect.element(screen.getByText(formatBytes(360 * GB))).toBeVisible()
   })
 
+  test('a rescan drops the finished tree and grows the new one from nothing', async () => {
+    const {screen, send} = await live('/storage')
+    send(growing(disk(100 * GB, 30 * GB), 1000))
+    send(WALKED)
+    await expect.element(screen.getByText(formatBytes(360 * GB))).toBeVisible()
+
+    send({type: 'rescan', data: {elapsed_ms: 0}})
+    await expect.element(screen.getByText('Reading the disk…')).toBeVisible()
+    await expect.element(screen.getByText(/· so far/)).not.toBeInTheDocument()
+
+    send(growing(disk(20 * GB, 10 * GB), 1000))
+    await expect.element(screen.getByLabelText('Storage sunburst of /')).toBeVisible()
+    await expect.element(screen.getByText(/^Your home folder · so far/)).toBeVisible()
+    await expect.element(screen.getByText(formatBytes(380 * GB))).toBeVisible()
+  })
+
   test('Insights says it is still reading until the walk ends', async () => {
     const {screen, send} = await live('/insights')
     await expect.element(screen.getByText('Reading the disk…')).toBeVisible()
