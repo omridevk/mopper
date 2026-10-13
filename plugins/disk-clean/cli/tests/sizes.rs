@@ -266,7 +266,7 @@ fn growing_snapshots_are_connected_and_only_grow() {
     let root = t.0.join("tree");
     for i in 0..30 {
         for j in 0..10 {
-            let dir = root.join(format!("t{i}/s{j}"));
+            let dir = root.join(format!("deep/t{i}/s{j}"));
             fs::create_dir_all(&dir).unwrap();
             for f in 0..40 {
                 fs::write(dir.join(format!("f{f}")), b"x").unwrap();
@@ -284,7 +284,7 @@ fn growing_snapshots_are_connected_and_only_grow() {
     let home = root.display().to_string();
     let plan = walk::Plan {
         home: root.clone(),
-        map_depth: Some(3),
+        map_depth: Some(4),
         map_min_kb: 200,
         now,
         days: days.clone(),
@@ -322,6 +322,13 @@ fn growing_snapshots_are_connected_and_only_grow() {
         }
         let rows: Rows = finished.iter().chain(open).cloned().collect();
         for (p, blocks, ..) in &rows {
+            for (q, inner, ..) in &rows {
+                if q != p && Path::new(q).starts_with(p) {
+                    assert!(blocks >= inner, "{p} is smaller than {q} inside it");
+                }
+            }
+        }
+        for (p, blocks, ..) in &rows {
             assert!(size_in(&last, p).is_some_and(|end| end >= *blocks), "{p}");
             assert!(
                 size_in(&before, p).is_none_or(|was| was <= *blocks),
@@ -339,7 +346,7 @@ fn growing_snapshots_are_connected_and_only_grow() {
         assert_eq!(count(&tree), rows.len());
         before = rows;
     }
-    assert!(last.len() < 1 + 30 + 300, "the cutoff kept every folder");
+    assert!(last.len() < 2 + 30 + 300, "the cutoff kept every folder");
     let json = disk_clean::insights::to_json(&out.insights, &days, now, &home);
     assert_eq!(
         json,

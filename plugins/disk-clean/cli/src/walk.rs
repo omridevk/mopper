@@ -274,15 +274,28 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
     }
-    if mapped(plan, &f) {
+    if mapped(plan, f.depth, f.blocks) {
         out.map.push((f.path, f.blocks, f.files, f.mtime));
     }
     f.blocks
 }
 
-fn mapped(plan: &Plan, f: &Frame) -> bool {
-    (f.depth == 0 || f.blocks.div_ceil(2) >= plan.map_min_kb)
-        && plan.map_depth.is_some_and(|m| f.depth <= m)
+fn mapped(plan: &Plan, depth: usize, blocks: u64) -> bool {
+    (depth == 0 || blocks.div_ceil(2) >= plan.map_min_kb)
+        && plan.map_depth.is_some_and(|m| depth <= m)
+}
+
+// Open folders with their size so far: their own blocks plus every open folder below them.
+fn open_rows<'a>(stack: &'a [Frame], plan: &Plan) -> Vec<Open<'a>> {
+    let mut below = (0, 0, 0);
+    stack
+        .iter()
+        .rev()
+        .filter_map(|f| {
+            below = (below.0 + f.blocks, below.1 + f.files, below.2.max(f.mtime));
+            mapped(plan, f.depth, below.0).then_some((f.path.as_path(), below.0, below.1, below.2))
+        })
+        .collect()
 }
 
 struct Entry {
@@ -628,12 +641,7 @@ fn consume(
                 return None;
             }
             if let Some(dir) = stack.last() {
-                let open: Vec<_> = stack
-                    .iter()
-                    .filter(|f| mapped(plan, f))
-                    .map(|f| (f.path.as_path(), f.blocks, f.files, f.mtime))
-                    .collect();
-                progress(out, &dir.path, &open);
+                progress(out, &dir.path, &open_rows(&stack, plan));
             }
         }
         let meta = entry.meta;
