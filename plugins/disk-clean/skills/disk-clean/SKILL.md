@@ -5,7 +5,10 @@ description: Find reclaimable disk space on this computer (macOS, Linux or Windo
 
 # Disk Clean
 
-Scan and review (stages 1 and 2) run as one command, then stage 3 deletes. Never skip the review — nothing is deleted without an explicit approval in the UI.
+Scan and review (stages 1 and 2) run as one session, and stage 3 deletes each approval while the
+session stays open: the user can delete, look, and delete again, any number of rounds, without a new
+scan. Never skip the review — nothing is deleted without an explicit approval in the UI, and you run
+every approved cleanup yourself, after showing its dry run.
 
 Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
 fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
@@ -16,7 +19,8 @@ under Git Bash on Windows) and for Claude Code's PowerShell tool on Windows (`ru
 ## Stages 1 and 2 — Scan and review
 
 Run this **in the background** (`run_in_background: true`) and tell the user to switch to the
-browser tab that opens: the page is the progress UI, so the terminal will look idle.
+browser tab that opens: the page is the progress UI, so the terminal will look idle. It is the
+session's server and runs until you stop it (see "The loop" below).
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" review --drives "<drives>"
@@ -38,16 +42,21 @@ right away, and scans in the background while the page fills in: a live counter 
 map and insights, then the git worktree checks and Docker/Homebrew/simulator probes. Delete
 works while the scan is still running: every item already on screen can be deleted. Worktree rows
 and the Docker and simulator command rows show "checking…" in place of their checkbox until their
-check answers. Confirming Delete during the scan stops it and approves what was found so far. The
-command **blocks** until the user confirms Delete or Cancel. When it exits, the **first line of stdout is `RUN_DIR`**; on approval a second line is the
-path of `$RUN_DIR/selection.json`. Read `RUN_DIR` from the background task's output before stage 3.
+check answers. Confirming Delete during the scan approves what is listed so far and the scan keeps
+going: rows listed later can be deleted in a later round. The **first line of stdout is `RUN_DIR`**,
+printed as soon as the run directory exists. Read it from the background task's output, then start
+`wait` (below).
 
 The run directory holds `scan.tsv` (cleanable items, appended as each one is listed on the page,
 so an approval made mid-scan is validated against exactly what was shown; rows still being checked
 are never in it), `map.tsv` (size tree), `disk.tsv` (volume
 totals, snapshot count, and `too_deep`: folders nested too deep to read, also reported on stderr),
-`insights.json` (home files by modified day, age per folder, kind, and the largest files), and on
-approval `selection.json`.
+`insights.json` (home files by modified day, age per folder, kind, and the largest files), and one
+numbered decision per approval: `decisions/<n>.json` (the selection, its mode and the plan the
+confirm dialog showed) and a working folder `decisions/<n>/` for its cleanup. `session.json` (port,
+token, pid) exists while the session is open. `clean.log` and `clean.events` are the one log of
+record for the whole session: every approval, cleanup, Undo and Empty, from the page or the
+terminal, is appended to both.
 
 `HOME` is resolved to its real path once at startup and that path is used everywhere (scan, map,
 safety rules, clean); when it differs (a symlinked home) the resolved path is printed on stderr.
@@ -112,25 +121,64 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   for good. Its confirm says "can't be undone", gives the exact counts and bytes, its button names
   the action ("Delete N items immediately · X"), and focus starts on Cancel. Nothing deleted this
   way is recorded or undoable.
-- **Cancel** (end the session without deleting) still has a few-second undo window.
-- After approval the page stays on the review app. One phase drives the header line, the hero, the
-  counter row, the status line and the summary, so they always agree: "Approved · waiting to start"
-  (Claude is showing the dry run), "Moving to the Trash" (or "Deleting for good"), then **"Moved to
-  Trash X · undo available"** with **Undo** (puts every item of this cleanup back exactly where it
-  was) and **Empty these from Trash** (deletes only these items from the Trash for good, after its
-  own confirm), then "Putting back" or "Emptying from the Trash" while those run. Moving to the
-  Trash frees no space, so it is never shown as freed; the free-space line says the Trash keeps the
-  space until it is emptied, and updates live while space comes back. If `clean` never runs, finds
-  nothing that passes the safety checks, or its worker dies, the page says the cleanup did not start
-  (or stopped) and why. **Details** opens a live log of every move, removal, kept worktree, failure
-  (with its reason), command, undo and empty; "Watch the movie" plays the cleanup film. A reload
-  keeps all of it. A small helper keeps serving the page after `review` exits; its only actions are
-  Undo and Empty for items in the Trash record, and it stops on its own a minute after the tab is
-  closed.
+- **Cancel** (stop the scan and delete nothing more) still has a few-second undo window. It wakes
+  you with `ended:`; then close the session with `stop`.
+- After approval the page stays on the review app and locks the list while the round waits, is
+  queued or runs. One phase drives the header line, the hero, the counter row, the status line and
+  the summary, so they always agree: "Approved · waiting for Claude to run it" (you are showing the
+  dry run), "queued" when an earlier cleanup still runs, "Moving to the Trash" (or "Deleting for
+  good"), then **"Moved to Trash X · undo available"** with **Undo** (puts every item of this
+  cleanup back exactly where it was) and **Empty these from Trash** (deletes only these items from
+  the Trash for good, after its own confirm), then "Putting back" or "Emptying from the Trash" while
+  those run. When a round finishes, the moved rows leave the list, the totals and disk numbers
+  update, every other row can be selected again, and the footer keeps the last cleanup's result
+  with its Undo and Empty; Undo brings the rows back. Moving to the Trash frees no space, so it is
+  never shown as freed; the free-space line says the Trash keeps the space until it is emptied, and
+  updates live while space comes back. If a cleanup finds nothing that passes the safety checks or
+  its worker dies, the page says the cleanup did not start (or stopped) and why. **Details** opens a
+  live log of every move, removal, kept worktree, failure (with its reason), command, undo and
+  empty; "Watch the movie" plays the cleanup film. A reload keeps all of it, and a closed tab
+  reopens at the same address while the session is open. When you stop the session the page says
+  so.
 
-Exit codes: `0` approved (`$RUN_DIR/selection.json` written), `3` nothing found,
-`4` timed out after 30 minutes, `5` cancelled or empty selection.
-On any non-zero exit, stop and report — do not delete anything.
+Exit codes: `0` the session was stopped, `3` the run directory you passed has nothing to clean, `4`
+a session is already open for that run directory. On a non-zero exit, stop and report — do not
+delete anything.
+
+## The loop — Claude stays in the loop for every cleanup
+
+As soon as `review` printed `RUN_DIR`, run `wait` **in the background**. It blocks until there is
+something you have not seen yet, prints one line and exits; that exit is what wakes you. Each
+decision and each page notice is returned once.
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" wait "$RUN_DIR"
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" wait "$RUN_DIR"
+```
+
+- `decision N PATH`, exit `0`: the user approved decision `N` (its selection is `PATH`). Show its
+  dry run, run it (stage 3, always with `--decision N`), report the result, then start `wait` again.
+- `page: ...`, exit `0`: the user ran Undo or Empty in the page; the line is its result. Tell the
+  user, then start `wait` again.
+- `ended: ...`, exit `5`: the user pressed Cancel in the page. Run `stop`.
+- `stopped: ...`, exit `3`: the session is closed. Do not start `wait` again.
+
+Approvals made while a cleanup runs queue and run in order. The session never ends on its own:
+keep it open (and `wait` running) until the user says they are done or asks you to close it, then:
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" stop "$RUN_DIR"
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" stop "$RUN_DIR"
+```
+
+`stop` asks the session to close (`0` closed, `3` no session was open), the page says the session
+is closed, and `review` exits `0`.
 
 ## Stage 3 — Background cleanup (to the Trash)
 
@@ -140,22 +188,23 @@ moves (`trash -- '<path>'`) under `# moved to the Trash`, Delete immediately rem
 (git worktree removals, fixed commands):
 
 ```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR"
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR" --decision N
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR"
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" clean --dry-run "$RUN_DIR" --decision N
 ```
 
 ```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DIR"
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DIR" --decision N
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DIR"
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" clean "$RUN_DIR" --decision N
 ```
 
-Returns immediately with a pid and a log path. The cleanup runs detached: each approved path is
+`N` is the decision `wait` printed; `--decision` is required. Returns immediately with a pid and a
+log path. The cleanup runs detached: each approved path is
 resolved again and then moved to the macOS Trash through the system API (NSFileManager, the same
 call Finder uses; a name clash in the Trash gets a new name, and Finder's Put Back works). On Linux
 it goes to the freedesktop.org Trash (`~/.local/share/Trash`, or `.Trash-$UID` at the top of another
@@ -164,24 +213,28 @@ goes to the Recycle Bin of its drive through the Shell (`IFileOperation`, the ca
 so Restore in the Recycle Bin works. Each item
 is written to `~/.cache/disk-clean/trashed.jsonl` before the move and completed after it, with where
 it landed. A path the Trash refuses is reported `NOT TRASHED` with the reason and left where it is.
-When the user chose Delete immediately (`"mode": "now"` in `selection.json`), paths are removed for
+When the user chose Delete immediately (`"mode": "now"` in the decision), paths are removed for
 good instead and never recorded. Items that already sit in a Trash are always removed for good.
-Worktrees and the fixed commands run afterwards and can't be undone. Only one `clean` runs per run
-directory, and only one of clean, undo or empty touches the Trash record at a time. Exit codes (the
-dry run uses the same ones): `0` queued, `2` no run directory / `selection.json` / `scan.tsv`, `3`
-nothing passed the safety checks (see `$RUN_DIR/rejected`), `4` another `clean` is already running
-for this run directory. Check progress with:
+Worktrees and the fixed commands run afterwards and can't be undone. Each decision works in
+`$RUN_DIR/decisions/N/` (its lists, `rejected`, `status`, `worker.pid`). Cleanups run one at a
+time per run directory: a decision approved while another runs is queued (it says so and exits `0`)
+and starts when every earlier decision finished. Only one of clean, undo or empty touches the Trash
+record at a time. Running a decision that is already queued, running or done says so and exits
+`0`; it never runs twice. Exit codes (the dry run uses the same ones): `0` queued or started, `2` no
+run directory / no such decision / no `--decision` / no `scan.tsv`, `3` nothing passed the safety
+checks (see `$RUN_DIR/decisions/N/rejected`). Check progress with:
 
 ```bash
-tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/status" 2>/dev/null
+tail -20 "$RUN_DIR/clean.log"; cat "$RUN_DIR/decisions/N/status" 2>/dev/null
 ```
 
-`status` reads `pending` while running, `done` when finished, `interrupted` if the worker died
-before finishing, and `abandoned` when nothing passed the safety checks or `clean` was never run
-after the approval. The tail of the log reports `removed: N items, X bytes` (what was freed),
+`status` reads `queued` while it waits for an earlier cleanup, `pending` while running, `done` when
+finished, `interrupted` if the worker died before finishing, and `abandoned` when nothing passed
+the safety checks. The tail of the log reports `removed: N items, X bytes` (what was freed),
 `trashed: N items, X bytes, in the Trash until it is emptied (...)` and, separately, how much the
-volume's free space changed since the worker started. Each run starts a fresh
-`$RUN_DIR/clean.events`; the review tab shows the current run live from it.
+volume's free space changed since the worker started. `clean.log` and `clean.events` are appended
+to, never cleared, and every worker line and event names its decision; the review tab shows each
+round live from them.
 
 ### After approval: report, undo, empty
 
@@ -190,19 +243,22 @@ available)"**, plus anything removed, kept or not trashed, taking X from the `tr
 `clean.log`. Moving to the Trash frees no space until the Trash is emptied; never call it freed.
 
 ```bash
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" undo "$RUN_DIR"
-bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DIR"
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" undo "$RUN_DIR" --decision N
+bash "${CLAUDE_SKILL_DIR}/scripts/run.sh" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DIR" --decision N
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" undo "$RUN_DIR"
-powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DIR"
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" undo "$RUN_DIR" --decision N
+powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/run.ps1" "${CLAUDE_PLUGIN_DATA}" empty "$RUN_DIR" --decision N
 ```
 
-- `undo` moves every item of that run that is still in the Trash back to its original path (a
+- Each round is its own cleanup in the Trash record. `--decision N` acts on that round only;
+  without it, `undo` / `empty` act on every round of the run directory. Both append their result to
+  `clean.log` and `clean.events`, so the open page shows it too.
+- `undo` moves every item of that cleanup that is still in the Trash back to its original path (a
   same-volume rename that never overwrites: if something exists at the original path again, for
   example a reinstalled `node_modules`, that item stays in the Trash and the output says why).
-- `empty` deletes that run's items from the Trash for good and reports what was emptied. It never
+- `empty` deletes that cleanup's items from the Trash for good and reports what was emptied. It never
   empties the whole Trash and never touches items disk-clean did not put there. Only run it when
   the user asks for it; it can't be undone.
 - `undo --all` / `empty --all` act on every recorded item still in the Trash, across runs.
@@ -295,10 +351,11 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
   `docker system prune -f` (dangling only, never named volumes), `brew cleanup --prune=all -s`.
 - Worktrees are never deleted directly: they are only removed with `git worktree remove`
   after a fresh re-check. A worktree that changed after the scan is kept and logged as `KEPT`.
-- The review page and its helper answer only requests addressed to `127.0.0.1:<port>` or
-  `localhost:<port>`; changes also need a JSON body from the page's own origin and its token. The
-  only changes to the Trash are Undo and Empty (`POST /undo`, `POST /empty`), which also require
-  the page's `Origin` and act only on ids in the Trash record.
+- The review page answers only requests addressed to `127.0.0.1:<port>` or `localhost:<port>`;
+  changes also need a JSON body from the page's own origin and its token (`stop` reads it from the
+  owner-only `session.json`). The only changes to the Trash are Undo and Empty (`POST /undo`,
+  `POST /empty`), which also require the page's `Origin` and act only on ids in the Trash record.
+  Approving never deletes anything: you run each decision with `clean`.
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
 - Approved paths go to the Trash (the macOS Trash, the freedesktop.org Trash on Linux, or the
   Recycle Bin on Windows), never
@@ -310,5 +367,6 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 
 Each run gets its own directory under `~/.cache/disk-clean/`. Old run directories are kept for
 audit and are safe to delete. To re-open the UI for a completed scan without rescanning, pass the
-run directory: `review "$RUN_DIR"` (it starts in the finished state and prints only the
-`selection.json` path on approval). `scan [RUN_DIR]` still runs the scan alone, without a page.
+run directory: `review "$RUN_DIR"` (it starts in the finished state, prints `RUN_DIR` first and
+runs the same loop: `wait`, `clean --decision N`, `stop`; rows already moved by an earlier round
+stay out of the list). `scan [RUN_DIR]` still runs the scan alone, without a page.
