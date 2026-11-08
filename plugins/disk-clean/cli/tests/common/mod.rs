@@ -503,6 +503,11 @@ pub fn wait_for(what: &str, limit: std::time::Duration, mut ready: impl FnMut() 
     }
 }
 
+pub fn decision_file(run: &Path) -> PathBuf {
+    std::fs::create_dir_all(run.join("decisions/1")).unwrap();
+    run.join("decisions/1.json")
+}
+
 pub fn events_of(run: &Path) -> Vec<serde_json::Value> {
     std::fs::read_to_string(run.join("clean.events"))
         .unwrap_or_default()

@@ -11,17 +11,17 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("../assets/page.html");
-const TIMEOUT: Duration = Duration::from_secs(1800);
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const PROBE_EVERY: Duration = Duration::from_secs(1);
-const NOTHING_FOUND: &str = "nothing-found";
-const REVIEW_POSTS: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/empty"];
+const FOLLOW_EVERY: Duration = Duration::from_millis(250);
+const FLUSH_BEFORE_EXIT: Duration = Duration::from_millis(300);
+const SETTLED: [&str; 3] = ["done", "abandoned", "interrupted"];
 
 #[derive(Serialize, Clone)]
 pub struct Item {
@@ -326,14 +326,15 @@ pub fn render(data: &Value, token: &str) -> String {
 }
 
 struct Finished {
-    categories: Vec<Category>,
+    lines: Vec<String>,
     index: clean::ScanIndex,
 }
 
 fn listed_in(dir: &Path) -> Finished {
+    let lines = util::complete_lines(&dir.join("scan.tsv"));
     Finished {
-        categories: load_scan(dir),
-        index: clean::index_scan(&util::complete_lines(&dir.join("scan.tsv"))),
+        index: clean::index_scan(&lines),
+        lines,
     }
 }
 
@@ -341,6 +342,11 @@ fn listed_in(dir: &Path) -> Finished {
 struct Log {
     generation: u64,
     events: Vec<String>,
+}
+
+struct Decided {
+    number: u64,
+    paths: Vec<String>,
 }
 
 pub struct Live {
@@ -351,10 +357,41 @@ pub struct Live {
     scanning: AtomicBool,
     last_progress: Mutex<Option<Instant>>,
     cancel: Arc<AtomicBool>,
+    decided: Mutex<Vec<Decided>>,
+    elapsed_ms: AtomicU64,
+    snapshots: AtomicI64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn decided_in(dir: &Path) -> Vec<Decided> {
+    clean::decisions(dir)
+        .into_iter()
+        .map(|number| Decided {
+            number,
+            paths: clean::read_decision(dir, number)
+                .and_then(|d| d.get("items").and_then(Value::as_array).cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|i| i.get("path").and_then(Value::as_str).map(str::to_string))
+                .collect(),
+        })
+        .collect()
+}
+
+fn is_at_or_inside(path: &str, outer: &str) -> bool {
+    path.strip_prefix(outer)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', std::path::MAIN_SEPARATOR]))
+}
+
+fn is_gone(path: &str) -> bool {
+    !path.starts_with("cmd:") && platform::is_link(Path::new(path)).is_none()
+}
+
+fn settled(status: &str) -> bool {
+    SETTLED.contains(&status)
 }
 
 impl Live {
@@ -367,16 +404,14 @@ impl Live {
             scanning: AtomicBool::new(true),
             last_progress: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
+            decided: Mutex::new(decided_in(dir)),
+            elapsed_ms: AtomicU64::new(0),
+            snapshots: AtomicI64::new(0),
         }
     }
 
     fn finished(&self) -> Option<Arc<Finished>> {
         lock(&self.finished).clone()
-    }
-
-    fn listed(&self) -> Arc<Finished> {
-        self.finished()
-            .unwrap_or_else(|| Arc::new(listed_in(&self.dir)))
     }
 
     fn restart(&self) {
@@ -393,6 +428,27 @@ impl Live {
         )];
         self.changed.notify_all();
     }
+
+    fn held_back(&self, path: &str) -> bool {
+        let decided = lock(&self.decided);
+        decided.iter().any(|d| {
+            d.paths.iter().any(|outer| {
+                is_at_or_inside(path, outer)
+                    && (is_gone(outer) || !settled(&clean::run_status(&self.dir, d.number)))
+            })
+        })
+    }
+
+    fn unfinished(&self) -> bool {
+        lock(&self.decided)
+            .iter()
+            .any(|d| !settled(&clean::run_status(&self.dir, d.number)))
+    }
+
+    fn emit_now(&self, event: &str, mut data: Value) {
+        data["elapsed_ms"] = json!(self.elapsed_ms.load(Ordering::Relaxed));
+        self.emit(event, data);
+    }
 }
 
 impl Sink for Live {
@@ -403,6 +459,21 @@ impl Sink for Live {
                 return;
             }
             *last = Some(Instant::now());
+        }
+        if event == "item"
+            && data["item"]["path"]
+                .as_str()
+                .is_some_and(|p| self.held_back(p))
+        {
+            return;
+        }
+        if event == "disk"
+            && let Some(n) = data["snapshots"].as_i64()
+        {
+            self.snapshots.store(n, Ordering::Relaxed);
+        }
+        if let Some(ms) = data["elapsed_ms"].as_u64() {
+            self.elapsed_ms.fetch_max(ms, Ordering::Relaxed);
         }
         if event == "done" {
             *lock(&self.finished) = Some(Arc::new(listed_in(&self.dir)));
@@ -485,12 +556,12 @@ pub fn with_trash(mut data: Value, run_dir: &Path, emit: trash::Emit) -> Value {
     data
 }
 
-pub fn run_trash_job(
+fn run_trash_job(
     name: &str,
     payload: &Value,
     run_dir: &Path,
     emit: trash::Emit,
-) -> Result<Value, &'static str> {
+) -> Result<(Value, String), &'static str> {
     let ids = trash::ids_of(payload);
     if ids.is_empty() {
         return Err("400 Bad Request");
@@ -503,29 +574,21 @@ pub fn run_trash_job(
         return Err("404 Not Found");
     }
     let run = trash::run_id(run_dir);
-    let result = if name == "/empty" {
+    let job = if name == "/empty" { "empty" } else { "undo" };
+    let result = if job == "empty" {
         trash::empty(&mut record, &ids, &run, emit)
     } else {
         trash::undo(&mut record, &ids, &run, emit)
     };
     match result {
-        Ok(report) => Ok(trash::rows(&report.changed)),
+        Ok(report) => Ok((
+            trash::rows(&report.changed),
+            trash::result_line(job, &report),
+        )),
         Err(e) => {
             eprintln!("disk-clean: {e}");
             Err("500 Internal Server Error")
         }
-    }
-}
-
-pub fn answer_trash_job(stream: &mut TcpStream, result: Result<Value, &'static str>) {
-    match result {
-        Ok(rows) => respond(
-            stream,
-            "200 OK",
-            "application/json",
-            rows.to_string().as_bytes(),
-        ),
-        Err(status) => refuse(stream, status),
     }
 }
 
@@ -539,12 +602,100 @@ fn post_payload(body: &[u8]) -> Option<Value> {
     }
 }
 
+fn page_job(stream: &mut TcpStream, target: &str, payload: &Value, live: &Live) {
+    let events = clean::Events::append(&live.dir);
+    let emit = |event: &str, data: Value| events.emit(event, data);
+    let name = target.trim_start_matches('/');
+    match run_trash_job(target, payload, &live.dir, &emit) {
+        Ok((rows, line)) => {
+            let line = format!("page: {name} from the page: {line}");
+            clean::log_line(&live.dir, &line);
+            crate::session::notice(&live.dir, name, &line);
+            respond(
+                stream,
+                "200 OK",
+                "application/json",
+                rows.to_string().as_bytes(),
+            );
+        }
+        Err(status) => refuse(stream, status),
+    }
+}
+
+fn rescan(stream: &mut TcpStream, live: &Arc<Live>) {
+    if live.unfinished() {
+        let reason = b"a cleanup is waiting or running; rescan when it finishes";
+        return respond(stream, "409 Conflict", "text/plain", reason);
+    }
+    if live
+        .scanning
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return respond(stream, "409 Conflict", "text/plain", b"scan running");
+    }
+    live.restart();
+    start_scan(Arc::clone(live));
+    respond(stream, "202 Accepted", "application/json", b"{}");
+}
+
+fn end_in_page(stream: &mut TcpStream, live: &Live) {
+    live.cancel.store(true, Ordering::Relaxed);
+    let line = format!(
+        "ended: the user pressed Cancel in the page, so nothing more is deleted; close the session with disk-clean stop {}",
+        util::shown(&live.dir)
+    );
+    clean::log_line(&live.dir, "the user pressed Cancel in the page");
+    crate::session::notice(&live.dir, "ended", &line);
+    respond(stream, "200 OK", "application/json", b"{}");
+}
+
+fn approve(stream: &mut TcpStream, live: &Live, payload: &Value) {
+    let items = match picked(live, payload) {
+        Ok(items) => items,
+        Err(reason) => {
+            return respond(stream, "409 Conflict", "text/plain", reason.as_bytes());
+        }
+    };
+    let mode = if text_of(payload, "mode") == "now" {
+        "now"
+    } else {
+        "trash"
+    };
+    match record_decision(live, &items, mode) {
+        Ok(Some(n)) => respond(
+            stream,
+            "200 OK",
+            "application/json",
+            json!({"decision": n}).to_string().as_bytes(),
+        ),
+        Ok(None) => respond(
+            stream,
+            "409 Conflict",
+            "text/plain",
+            b"nothing selected can be deleted: it is not listed yet, already approved or gone",
+        ),
+        Err(e) => {
+            eprintln!("disk-clean: could not record the decision: {e}");
+            refuse(stream, "500 Internal Server Error");
+        }
+    }
+}
+
+fn stop_session(stream: &mut TcpStream, live: &Live, stop: &mpsc::Sender<()>) {
+    live.cancel.store(true, Ordering::Relaxed);
+    live.emit_now("closed", json!({}));
+    clean::log_line(&live.dir, "the session was stopped");
+    respond(stream, "200 OK", "application/json", b"{}");
+    let _ = stop.send(());
+}
+
 fn handle(
     mut stream: TcpStream,
     port: u16,
     pages: &Pages,
     token: &str,
-    decided: &mpsc::Sender<Value>,
+    stop: &mpsc::Sender<()>,
     live: &Arc<Live>,
 ) {
     let req = match http::read_request(&mut stream) {
@@ -559,14 +710,15 @@ fn handle(
     match req.method.as_str() {
         "GET" => {
             let route = target.split('?').next().unwrap_or("");
+            let tokened = constant_eq(query_token(target).as_bytes(), token.as_bytes());
             if route == "/favicon.ico" {
                 respond(&mut stream, "204 No Content", "text/plain", b"");
+            } else if http::STREAMS.contains(&route) && !tokened {
+                refuse(&mut stream, "403 Forbidden");
             } else if route == "/events" {
-                if constant_eq(query_token(target).as_bytes(), token.as_bytes()) {
-                    stream_events(&mut stream, live);
-                } else {
-                    refuse(&mut stream, "403 Forbidden");
-                }
+                stream_events(&mut stream, live);
+            } else if route == "/clean-events" {
+                crate::session::stream_events(&mut stream, &live.dir);
             } else if http::is_page_route(route) {
                 let data = if lock(&live.log).generation > 0 {
                     &pages.live
@@ -586,7 +738,7 @@ fn handle(
             }
         }
         "POST" => {
-            if !REVIEW_POSTS.contains(&target) {
+            if !http::POST_ROUTES.contains(&target) {
                 return refuse(&mut stream, "404 Not Found");
             }
             if !http::is_trusted_post(&req) {
@@ -603,72 +755,34 @@ fn handle(
             if !constant_eq(sent.as_bytes(), token.as_bytes()) {
                 return refuse(&mut stream, "403 Forbidden");
             }
-            if target == "/undo" || target == "/empty" {
-                if !http::is_own_origin_post(&req, port) {
-                    return refuse(&mut stream, "403 Forbidden");
+            match target {
+                "/undo" | "/empty" if !http::is_own_origin_post(&req, port) => {
+                    refuse(&mut stream, "403 Forbidden")
                 }
-                let emit = |event: &str, data: Value| live.emit(event, data);
-                let result = run_trash_job(target, &payload, &live.dir, &emit);
-                return answer_trash_job(&mut stream, result);
-            }
-            if target == "/rescan" {
-                if live
-                    .scanning
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
-                    respond(&mut stream, "409 Conflict", "text/plain", b"scan running");
-                    return;
-                }
-                live.restart();
-                start_scan(Arc::clone(live), decided.clone(), false);
-                respond(&mut stream, "202 Accepted", "application/json", b"{}");
-                return;
-            }
-            let approve = payload.get("decision").and_then(Value::as_str) == Some("approve");
-            let items = if target == "/preview" || approve {
-                match picked(live, &payload) {
-                    Ok(items) => items,
-                    Err(reason) => {
-                        respond(&mut stream, "409 Conflict", "text/plain", reason.as_bytes());
-                        return;
+                "/undo" | "/empty" => page_job(&mut stream, target, &payload, live),
+                "/rescan" => rescan(&mut stream, live),
+                "/stop" => stop_session(&mut stream, live, stop),
+                "/preview" => match picked(live, &payload) {
+                    Ok(items) => {
+                        let finished = live.finished();
+                        let lines = lines_now(live, None);
+                        let index = finished
+                            .as_ref()
+                            .map_or_else(|| clean::index_scan(&lines), |f| f.index.clone());
+                        let body =
+                            preview(&categories_now(live, &lines), &index, &items, &util::home())
+                                .to_string();
+                        respond(&mut stream, "200 OK", "application/json", body.as_bytes());
                     }
+                    Err(reason) => {
+                        respond(&mut stream, "409 Conflict", "text/plain", reason.as_bytes())
+                    }
+                },
+                _ if text_of(&payload, "decision") == "approve" => {
+                    approve(&mut stream, live, &payload)
                 }
-            } else {
-                Vec::new()
-            };
-            if target == "/preview" {
-                let listed = live.listed();
-                let body =
-                    preview(&listed.categories, &listed.index, &items, &util::home()).to_string();
-                respond(&mut stream, "200 OK", "application/json", body.as_bytes());
-                return;
+                _ => end_in_page(&mut stream, live),
             }
-            let scanning = live.finished().is_none();
-            if approve && scanning && selection(&live.listed().categories, &items).is_none() {
-                respond(
-                    &mut stream,
-                    "409 Conflict",
-                    "text/plain",
-                    b"nothing selected has been listed by the scan yet",
-                );
-                return;
-            }
-            if !approve || scanning {
-                live.cancel.store(true, Ordering::Relaxed);
-            }
-            respond(&mut stream, "200 OK", "application/json", b"{}");
-            drop(stream);
-            let mode = if payload.get("mode").and_then(Value::as_str) == Some("now") {
-                "now"
-            } else {
-                "trash"
-            };
-            let _ = decided.send(if approve {
-                json!({"decision": "approve", "items": items, "mode": mode})
-            } else {
-                json!({"decision": "cancel"})
-            });
         }
         _ => refuse(&mut stream, "501 Not Implemented"),
     }
@@ -702,10 +816,31 @@ fn decoded(categories: &[Category], payload: &Value) -> Vec<String> {
     )
 }
 
-fn first_lines(dir: &Path, count: usize) -> Vec<String> {
-    let mut lines = util::complete_lines(&dir.join("scan.tsv"));
-    lines.truncate(count);
+fn path_of(line: &str) -> &str {
+    line.split('\t').nth(8).unwrap_or("")
+}
+
+fn lines_now(live: &Live, listed: Option<usize>) -> Vec<String> {
+    if let Some(done) = live.finished() {
+        return done.lines.clone();
+    }
+    let mut lines = util::complete_lines(&live.dir.join("scan.tsv"));
+    if let Some(count) = listed {
+        lines.truncate(count);
+    }
     lines
+}
+
+fn categories_now(live: &Live, lines: &[String]) -> Vec<Category> {
+    if lock(&live.decided).is_empty() {
+        return categories_of(lines);
+    }
+    let shown: Vec<String> = lines
+        .iter()
+        .filter(|l| !live.held_back(path_of(l)))
+        .cloned()
+        .collect();
+    categories_of(&shown)
 }
 
 fn picked(live: &Live, payload: &Value) -> Result<Vec<Value>, &'static str> {
@@ -713,11 +848,8 @@ fn picked(live: &Live, payload: &Value) -> Result<Vec<Value>, &'static str> {
         .get("listed")
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok());
-    let paths = match (live.finished(), listed) {
-        (Some(done), _) => decoded(&done.categories, payload),
-        (None, Some(count)) => decoded(&categories_of(&first_lines(&live.dir, count)), payload),
-        (None, None) => decoded(&live.listed().categories, payload),
-    };
+    let categories = categories_now(live, &lines_now(live, listed));
+    let paths = decoded(&categories, payload);
     if selection::fingerprint(&paths) != text_of(payload, "fingerprint") {
         return Err(CHANGED);
     }
@@ -725,6 +857,80 @@ fn picked(live: &Live, payload: &Value) -> Result<Vec<Value>, &'static str> {
         .into_iter()
         .map(|path| json!({"path": path}))
         .collect())
+}
+
+fn record_decision(live: &Live, items: &[Value], mode: &str) -> io::Result<Option<u64>> {
+    let lines = lines_now(live, None);
+    let categories = categories_now(live, &lines);
+    let Some(mut chosen) = selection(&categories, items) else {
+        return Ok(None);
+    };
+    let index = live
+        .finished()
+        .map_or_else(|| clean::index_scan(&lines), |f| f.index.clone());
+    let mut decided = lock(&live.decided);
+    let n = clean::decisions(&live.dir)
+        .into_iter()
+        .chain(decided.iter().map(|d| d.number))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    chosen["decision"] = json!(n);
+    chosen["mode"] = json!(mode);
+    chosen["plan"] = preview(&categories, &index, items, &util::home());
+    let path = clean::decision_path(&live.dir, n);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    util::write_atomic(
+        &path,
+        serde_json::to_string_pretty(&chosen)
+            .map_err(io::Error::other)?
+            .as_bytes(),
+    )?;
+    let chosen_items = chosen["items"].as_array().cloned().unwrap_or_default();
+    let planned: Vec<Value> = chosen_items
+        .iter()
+        .map(|i| {
+            json!({
+                "path": i["path"],
+                "label": i["label"],
+                "bytes": i["bytes"],
+                "section": i["category"],
+                "exact": i["exact"],
+            })
+        })
+        .collect();
+    let total = chosen["total_bytes"].as_i64().unwrap_or(0);
+    clean::Events::round(&live.dir, n).emit(
+        "approved",
+        json!({
+            "items": planned,
+            "bytes": total,
+            "mode": mode,
+            "trash_run": trash::round_run(&live.dir, n),
+        }),
+    );
+    clean::log_line(
+        &live.dir,
+        &format!(
+            "approved decision {n}: {} items, {total} bytes, {} (waiting for Claude to run it)",
+            planned.len(),
+            if mode == "now" {
+                "delete immediately"
+            } else {
+                "to the Trash"
+            }
+        ),
+    );
+    decided.push(Decided {
+        number: n,
+        paths: chosen_items
+            .iter()
+            .filter_map(|i| i["path"].as_str().map(str::to_string))
+            .collect(),
+    });
+    Ok(Some(n))
 }
 
 pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
@@ -752,6 +958,7 @@ pub fn selection(categories: &[Category], items: &[Value]) -> Option<Value> {
             "action": known.action,
             "cmd_id": known.cmd_id,
             "category": section,
+            "exact": known.accuracy == "exact",
         }));
     }
     if chosen.is_empty() {
@@ -809,8 +1016,9 @@ fn reclaimable(categories: &[Category]) -> i64 {
 }
 
 fn finished_run(dir: &Path) -> Option<(Value, Live)> {
-    let categories = load_scan(dir);
-    if categories.is_empty() {
+    let live = Live::new(dir);
+    let categories = categories_now(&live, &util::complete_lines(&dir.join("scan.tsv")));
+    if categories.is_empty() && lock(&live.decided).is_empty() {
         return None;
     }
     let (free, total) = disk_stats();
@@ -825,7 +1033,6 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or(Value::Null);
     let reclaimable = reclaimable(&categories);
-    let live = Live::new(dir);
     let at_zero = |mut data: Value| {
         data["elapsed_ms"] = json!(0);
         data
@@ -861,23 +1068,7 @@ fn finished_run(dir: &Path) -> Option<(Value, Live)> {
     Some((data, live))
 }
 
-pub(crate) fn approved_page(dir: &Path, token: &str, emit: trash::Emit) -> Option<String> {
-    let (mut data, _) = finished_run(dir)?;
-    let selection: Value = std::fs::read(dir.join("selection.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())?;
-    let paths: Vec<Value> = selection
-        .get("items")?
-        .as_array()?
-        .iter()
-        .filter_map(|i| i.get("path").cloned())
-        .collect();
-    data["approved"] = json!(true);
-    data["selection"] = json!(paths);
-    Some(render(&with_trash(data, dir, emit), token))
-}
-
-fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(u16, String)> {
+fn serve(data: &Value, live: Arc<Live>, stop: mpsc::Sender<()>) -> io::Result<(u16, String)> {
     let token = token();
     let pages = Arc::new(Pages {
         first: data.clone(),
@@ -889,7 +1080,7 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     let served = (port, token.clone());
     std::thread::spawn(move || {
         http::serve(listener, move |stream| {
-            handle(stream, port, &pages, &token, &tx, &live)
+            handle(stream, port, &pages, &token, &stop, &live)
         });
     });
     eprintln!("review UI: {url}");
@@ -901,68 +1092,11 @@ fn serve(data: &Value, live: Arc<Live>, tx: mpsc::Sender<Value>) -> io::Result<(
     Ok(served)
 }
 
-fn watch_after_approval(dir: &Path, (port, token): (u16, String)) {
-    let spawned = std::env::current_exe().and_then(|exe| {
-        platform::spawn_detached(
-            std::process::Command::new(exe)
-                .arg("watch")
-                .arg(dir)
-                .env("DISK_CLEAN_WATCH_TOKEN", token)
-                .env("DISK_CLEAN_WATCH_PORT", port.to_string())
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null()),
-        )
-    });
-    if let Err(e) = spawned {
-        eprintln!("could not start the cleanup page watcher: {e}");
-    }
-}
-
-fn decide(rx: &mpsc::Receiver<Value>, live: &Live) -> io::Result<(i32, Option<PathBuf>)> {
-    let Ok(payload) = rx.recv_timeout(TIMEOUT) else {
-        eprintln!("timed out waiting for approval");
-        return Ok((4, None));
-    };
-    match payload.get("decision").and_then(Value::as_str) {
-        Some("approve") => {}
-        Some(NOTHING_FOUND) => {
-            eprintln!("nothing to clean");
-            return Ok((3, None));
-        }
-        _ => {
-            eprintln!("cancelled in the UI");
-            return Ok((5, None));
-        }
-    }
-    let items = payload
-        .get("items")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let Some(mut selection) = selection(&live.listed().categories, &items) else {
-        eprintln!("no deletable items were selected");
-        return Ok((5, None));
-    };
-    selection["mode"] = payload.get("mode").cloned().unwrap_or(json!("trash"));
-    clean::clear_previous_run(&live.dir)?;
-    let out = live.dir.join("selection.json");
-    std::fs::write(
-        &out,
-        serde_json::to_string_pretty(&selection).map_err(io::Error::other)?,
-    )?;
-    Ok((0, Some(out)))
-}
-
-fn start_scan(live: Arc<Live>, tx: mpsc::Sender<Value>, first: bool) {
+fn start_scan(live: Arc<Live>) {
     std::thread::spawn(move || {
         let started = Instant::now();
         match scan::scan(&live.dir, &*live, Arc::clone(&live.cancel)) {
-            Ok(()) => {
-                if first && live.finished().is_some_and(|f| f.categories.is_empty()) {
-                    let _ = tx.send(json!({"decision": NOTHING_FOUND}));
-                }
-            }
+            Ok(()) => {}
             Err(e) if e.kind() != io::ErrorKind::Interrupted => {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 live.emit(
@@ -975,42 +1109,117 @@ fn start_scan(live: Arc<Live>, tx: mpsc::Sender<Value>, first: bool) {
     });
 }
 
-fn live_scan() -> io::Result<i32> {
-    let dir = scan::new_run_dir(None)?;
-    let live = Arc::new(Live::new(&dir));
-    let (tx, rx) = mpsc::channel();
-    let served = serve(&json!({"live": true}), Arc::clone(&live), tx.clone())?;
-    start_scan(Arc::clone(&live), tx, true);
-    let (code, selection) = decide(&rx, &live)?;
-    if selection.is_some() {
-        watch_after_approval(&dir, served);
+fn disk_now(live: &Live) {
+    let Some(stats) = platform::volume_stats(&platform::data_mount()) else {
+        return;
+    };
+    live.emit_now(
+        "disk",
+        json!({
+            "total": stats.total,
+            "used": stats.used,
+            "free": stats.avail,
+            "snapshots": live.snapshots.load(Ordering::Relaxed),
+        }),
+    );
+}
+
+fn round_finished(live: &Live, n: u64) {
+    let gone: Vec<String> = lock(&live.decided)
+        .iter()
+        .filter(|d| d.number == n)
+        .flat_map(|d| d.paths.iter().filter(|p| is_gone(p)).cloned())
+        .collect();
+    if !gone.is_empty() {
+        let mut leaving: Vec<String> = util::complete_lines(&live.dir.join("scan.tsv"))
+            .iter()
+            .map(|l| path_of(l).to_string())
+            .filter(|p| gone.iter().any(|g| is_at_or_inside(p, g)))
+            .chain(gone.iter().cloned())
+            .collect();
+        leaving.sort();
+        leaving.dedup();
+        for path in leaving {
+            live.emit_now("unlisted", json!({"path": path}));
+        }
     }
-    println!("{}", util::shown(&dir));
-    if let Some(path) = selection {
-        println!("{}", util::shown(&path));
+    disk_now(live);
+}
+
+fn relist(live: &Live, path: &str) {
+    let lines = util::complete_lines(&live.dir.join("scan.tsv"));
+    let Some(line) = lines.iter().rev().find(|l| path_of(l) == path) else {
+        return;
+    };
+    let fields: Vec<&str> = line.split('\t').collect();
+    if let Some((category, item)) = parse_row(&fields) {
+        live.emit_now("item", json!({"category": category, "item": item}));
     }
-    Ok(code)
+}
+
+fn follow(live: Arc<Live>) {
+    let mut follower = crate::session::follower(&live.dir, true);
+    loop {
+        std::thread::sleep(FOLLOW_EVERY);
+        for (name, event) in crate::session::next_events(&mut follower) {
+            let decision = event.get("decision").and_then(Value::as_u64);
+            match (name.as_str(), decision) {
+                ("done" | "abandoned", Some(n)) => round_finished(&live, n),
+                ("undone", _) if event["outcome"] == "restored" => {
+                    if let Some(path) = event["path"].as_str() {
+                        relist(&live, path);
+                    }
+                }
+                ("undo_done" | "empty_done", _) => disk_now(&live),
+                _ => {}
+            }
+        }
+        let numbers: Vec<u64> = lock(&live.decided).iter().map(|d| d.number).collect();
+        for n in numbers {
+            clean::run_status(&live.dir, n);
+        }
+    }
 }
 
 pub fn run(run_dir: Option<String>) -> io::Result<i32> {
-    let Some(dir) = run_dir else {
-        return live_scan();
+    let (dir, data, live, fresh) = match run_dir {
+        None => {
+            let dir = scan::new_run_dir(None)?;
+            let live = Live::new(&dir);
+            (dir, json!({"live": true}), live, true)
+        }
+        Some(dir) => {
+            let Some((data, live)) = finished_run(Path::new(&dir)) else {
+                eprintln!("nothing to clean");
+                return Ok(3);
+            };
+            (PathBuf::from(dir), data, live, false)
+        }
     };
-    let Some((data, live)) = finished_run(Path::new(&dir)) else {
-        eprintln!("nothing to clean");
-        return Ok(3);
+    let Some(_session) = crate::session::claim(&dir)? else {
+        eprintln!(
+            "a disk-clean session is already open for {}",
+            util::shown(&dir)
+        );
+        return Ok(4);
     };
+    let mut stdout = io::stdout().lock();
+    writeln!(stdout, "{}", util::shown(&dir))?;
+    stdout.flush()?;
+    drop(stdout);
     let live = Arc::new(live);
-    let (tx, rx) = mpsc::channel();
-    let served = serve(&data, Arc::clone(&live), tx)?;
-    let (code, selection) = decide(&rx, &live)?;
-    if selection.is_some() {
-        watch_after_approval(&live.dir, served);
+    let (stop, stopped) = mpsc::channel();
+    let (port, token) = serve(&data, Arc::clone(&live), stop)?;
+    crate::session::write(&dir, port, &token)?;
+    let following = Arc::clone(&live);
+    std::thread::spawn(move || follow(following));
+    if fresh {
+        start_scan(Arc::clone(&live));
     }
-    if let Some(path) = selection {
-        println!("{}", util::shown(&path));
-    }
-    Ok(code)
+    let _ = stopped.recv();
+    std::thread::sleep(FLUSH_BEFORE_EXIT);
+    crate::session::close(&dir);
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -1029,5 +1238,47 @@ mod tests {
         assert_eq!(replay.matches("event: growing").count(), 1);
         assert!(replay.contains(r#"data: {"n":3}"#));
         assert_eq!(replay.matches("event: unlisted").count(), 4);
+    }
+
+    #[test]
+    fn approved_paths_and_paths_inside_them_are_never_listed_again() {
+        let dir = std::env::temp_dir().join(format!("disk-clean-held-{}", std::process::id()));
+        let (kept, gone) = (dir.join("kept"), dir.join("gone"));
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::create_dir_all(clean::decision_dir(&dir, 1)).unwrap();
+        std::fs::create_dir_all(clean::decision_dir(&dir, 2)).unwrap();
+        let text = |p: &Path| p.to_str().unwrap().to_string();
+        let decision = |paths: &[String]| {
+            json!({"items": paths.iter().map(|p| json!({"path": p})).collect::<Vec<_>>()})
+                .to_string()
+        };
+        std::fs::write(
+            clean::decision_path(&dir, 1),
+            decision(&[text(&kept), text(&gone)]),
+        )
+        .unwrap();
+        std::fs::write(clean::decision_dir(&dir, 1).join("status"), "done\n").unwrap();
+        let waiting = dir.join("waiting");
+        std::fs::write(clean::decision_path(&dir, 2), decision(&[text(&waiting)])).unwrap();
+        let live = Live::new(&dir);
+        let item = |p: &Path| json!({"item": {"path": text(p)}});
+        for path in [
+            &gone,
+            &gone.join("inner"),
+            &waiting,
+            &waiting.join("x"),
+            &kept,
+            &kept.join("x"),
+            &dir.join("gone-too"),
+        ] {
+            live.emit("item", item(path));
+        }
+        let (_, len, replay) = backlog(&live);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(len, 3, "{replay}");
+        assert!(replay.contains(&format!("\"{}\"", text(&kept))));
+        assert!(replay.contains(&text(&kept.join("x"))));
+        assert!(replay.contains(&text(&dir.join("gone-too"))));
+        assert!(live.unfinished(), "decision 2 waits for Claude");
     }
 }

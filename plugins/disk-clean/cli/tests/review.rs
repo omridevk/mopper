@@ -70,7 +70,8 @@ fn review_serves_page_and_writes_selection() {
     .unwrap();
     fs::write(
         run.join("clean.events"),
-        r#"{"event":"started","run":"old","free":1,"paths":1,"worktrees":0,"commands":0,"bytes":1,"elapsed_ms":0}"#,
+        r#"{"event":"started","run":"old","free":1,"paths":1,"worktrees":0,"commands":0,"bytes":1,"elapsed_ms":0}
+"#,
     )
     .unwrap();
     fs::write(run.join("status"), "done\n").unwrap();
@@ -79,7 +80,6 @@ fn review_serves_page_and_writes_selection() {
         common::bin(&home)
             .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1")
-            .env("DISK_CLEAN_WATCH_START", "3")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     );
@@ -194,20 +194,19 @@ fn review_serves_page_and_writes_selection() {
         "a selection decoded differently from the page is refused"
     );
     assert!(reason.contains("the list changed"), "{reason}");
-    assert_eq!(post(port, &approve), 200);
-    let status = child.wait().unwrap();
-    assert_eq!(status.code(), Some(0));
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
-    assert_eq!(stdout.trim(), common::text(&run.join("selection.json")));
+    let (status, answer) = post_reply(port, "/decide", &approve);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer).unwrap(),
+        serde_json::json!({"decision": 1})
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the session stays open"
+    );
 
-    let sel: Value =
-        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+    let decision = run.join("decisions/1.json");
+    let sel: Value = serde_json::from_str(&fs::read_to_string(&decision).unwrap()).unwrap();
     let paths: Vec<&str> = sel["items"]
         .as_array()
         .unwrap()
@@ -223,21 +222,60 @@ fn review_serves_page_and_writes_selection() {
     assert_eq!(sel["items"][0]["category"], "caches");
     assert_eq!(sel["items"][1]["category"], "docker");
     assert_eq!(sel["total_bytes"], 3048);
+    assert_eq!(sel["decision"], 1);
+    assert_eq!(sel["mode"], "trash");
+    assert!(!run.join("selection.json").exists());
 
+    let events = common::events_of(&run);
+    assert_eq!(
+        events[0]["run"], "old",
+        "the one log of record is never cleared"
+    );
+    let approved = events.last().unwrap();
+    assert_eq!(approved["event"], "approved");
+    assert_eq!(approved["decision"], 1);
+    assert_eq!(approved["bytes"], 3048);
+    assert_eq!(approved["items"][1]["path"], "cmd:docker-prune");
+    let log = fs::read_to_string(run.join("clean.log")).unwrap();
     assert!(
-        !run.join("clean.events").exists() && !run.join("status").exists(),
-        "a new approval clears the previous cleanup's events and status"
+        log.contains("approved decision 1: 2 items, 3048 bytes"),
+        "approvals are written to clean.log: {log}"
     );
-    let after = events(port, &token, "waiting");
+
+    let woke = common::cli(&["wait", &common::text(&run)], &home, &[]);
+    assert_eq!(woke.status.code(), Some(0));
     assert_eq!(
-        after[0].0, "waiting",
-        "a watcher keeps serving the page's events after review exits"
+        String::from_utf8_lossy(&woke.stdout).trim(),
+        format!("decision 1 {}", common::text(&decision))
     );
+    let (status, reason) = post_reply(port, "/decide", &approve);
+    assert_eq!(status, 409, "approved paths are held back: {reason}");
+
+    let stdout = stop_session(&mut child, &run, &home);
+    assert_eq!(stdout.lines().next(), Some(common::text(&run).as_str()));
+    let after = common::cli(&["wait", &common::text(&run)], &home, &[]);
+    assert_eq!(after.status.code(), Some(3), "a closed session wakes wait");
+    assert!(String::from_utf8_lossy(&after.stdout).starts_with("stopped: "));
+    assert!(!run.join("session.json").exists());
+}
+
+fn stop_session(child: &mut common::Reaped, run: &Path, home: &Path) -> String {
+    let out = common::cli(&["stop", &common::text(run)], home, &[]);
     assert_eq!(
-        post(port, &approve),
-        405,
-        "the watcher accepts no decisions"
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    stdout
 }
 
 #[test]
@@ -493,20 +531,12 @@ fn review_without_run_dir_streams_the_scan() {
     );
     let approve = picks_body(&token, "approve", &run, &[cache.to_str().unwrap()], None);
     assert_eq!(post_to(port, "/decide", &approve), 200);
-    assert_eq!(child.wait().unwrap().code(), Some(0));
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
+    let stdout = stop_session(&mut child, &run, &home);
     let lines: Vec<&str> = stdout.lines().collect();
-    let run = Path::new(lines[0]);
+    assert_eq!(lines, [common::text(&run)], "{stdout}");
     assert!(run.starts_with(home.join(".cache/disk-clean")), "{stdout}");
     assert!(run.join("scan.tsv").is_file() && run.join("disk.tsv").is_file());
-    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
-    let sel = fs::read_to_string(run.join("selection.json")).unwrap();
+    let sel = fs::read_to_string(run.join("decisions/1.json")).unwrap();
     assert!(sel.contains(cache.to_str().unwrap()));
 }
 
@@ -656,32 +686,26 @@ fn review_without_run_dir_streams_the_scan_on_linux() {
     );
     let approve = picks_body(&token, "approve", &run, &[cache.to_str().unwrap()], None);
     assert_eq!(post_to(port, "/decide", &approve), 200);
-    assert_eq!(child.wait().unwrap().code(), Some(0));
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
+    let stdout = stop_session(&mut child, &run, &home);
     let lines: Vec<&str> = stdout.lines().collect();
-    let run = Path::new(lines[0]);
+    assert_eq!(lines, [common::text(&run)], "{stdout}");
     assert!(run.starts_with(home.join(".cache/disk-clean")), "{stdout}");
     assert!(run.join("scan.tsv").is_file() && run.join("disk.tsv").is_file());
-    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
-    let sel = fs::read_to_string(run.join("selection.json")).unwrap();
+    let sel = fs::read_to_string(run.join("decisions/1.json")).unwrap();
     assert!(sel.contains(cache.to_str().unwrap()));
 }
 
 #[cfg(unix)]
 fn spawn_live(home: &Path, bin: &Path) -> (common::Reaped, u16, String) {
+    let getconf = bin.join("getconf");
+    fs::write(&getconf, "#!/bin/sh\nexit 1\n").unwrap();
+    common::status(Command::new("chmod").arg("+x").arg(&getconf));
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let mut child = common::reaped(
         common::bin(home)
             .arg("review")
             .env("PATH", path)
             .env("DISK_CLEAN_SKIP_MAP", "1")
-            .env("DISK_CLEAN_WATCH_START", "1")
             .env("DISK_CLEAN_NO_BROWSER", "1")
             .env("DISK_CLEAN_MIN_BYTES", "1")
             .stdout(Stdio::piped())
@@ -808,17 +832,10 @@ fn rescan_restarts_the_scan_in_place() {
         None,
     );
     assert_eq!(post_to(port, "/decide", &approve), 200);
-    assert_eq!(child.wait().unwrap().code(), Some(0));
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
-    let run = Path::new(stdout.lines().next().unwrap());
+    let stdout = stop_session(&mut child, &run, &home);
+    assert_eq!(stdout.lines().next(), Some(common::text(&run).as_str()));
     let sel: Value =
-        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string(run.join("decisions/1.json")).unwrap()).unwrap();
     let chosen: Vec<&str> = sel["items"]
         .as_array()
         .unwrap()
@@ -890,7 +907,7 @@ const DEEP_LINKS: [&str; 7] = [
 
 #[test]
 fn deep_links_get_the_page_and_api_routes_are_unchanged() {
-    let (_t, mut child, port, token) = finished_review("deep");
+    let (t, mut child, port, token) = finished_review("deep");
     let (status, page) = get(port, "/");
     assert_eq!(status, 200);
     for target in DEEP_LINKS {
@@ -912,7 +929,16 @@ fn deep_links_get_the_page_and_api_routes_are_unchanged() {
     );
     let body = format!(r#"{{"token": "{token}", "decision": "cancel", "items": []}}"#);
     assert_eq!(post(port, &body), 200);
-    assert_eq!(child.wait().unwrap().code(), Some(5));
+    let run = t.0.join("run");
+    let woke = common::cli(&["wait", &common::text(&run)], &t.0, &[]);
+    assert_eq!(woke.status.code(), Some(5), "Cancel wakes Claude");
+    let line = String::from_utf8_lossy(&woke.stdout).into_owned();
+    assert!(line.starts_with("ended: "), "{line}");
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "Cancel leaves stopping to Claude"
+    );
+    stop_session(&mut child, &run, &t.0);
 }
 
 #[test]
@@ -967,12 +993,12 @@ fn a_foreign_host_or_origin_is_refused_everywhere() {
     let named = format!("Host: localhost:{port}\r\n");
     assert_eq!(request(port, raw("GET", "/", &named, "")).0, 200);
     assert_eq!(post(port, &body), 200);
-    assert_eq!(child.wait().unwrap().code(), Some(5));
+    stop_session(&mut child, &t.0.join("run"), &t.0);
 }
 
 #[test]
 fn oversized_slow_and_excess_requests_are_turned_away() {
-    let (_t, mut child, port, token) = finished_review("limits");
+    let (t, mut child, port, token) = finished_review("limits");
     let local = format!("Host: 127.0.0.1:{port}\r\n");
     let padded = format!("{local}X-Pad: {}\r\n", "a".repeat(17 * 1024));
     assert_eq!(request(port, raw("GET", "/", &padded, "")).0, 431);
@@ -1037,7 +1063,7 @@ fn oversized_slow_and_excess_requests_are_turned_away() {
         ),
         200
     );
-    assert_eq!(child.wait().unwrap().code(), Some(5));
+    stop_session(&mut child, &t.0.join("run"), &t.0);
 }
 
 fn post_reply(port: u16, route: &str, body: &str) -> (u16, String) {
@@ -1056,6 +1082,22 @@ fn blocking_docker(bin: &Path, gate: &Path) {
         &docker,
         format!(
             "#!/bin/sh\nwhile [ ! -e '{}' ]; do [ -d '{}' ] || exit 1; sleep 0.05; done\nexit 1\n",
+            gate.display(),
+            bin.display()
+        ),
+    )
+    .unwrap();
+    common::status(Command::new("chmod").arg("+x").arg(&docker));
+}
+
+#[cfg(unix)]
+fn answering_docker(bin: &Path, gate: &Path) {
+    fs::create_dir_all(bin).unwrap();
+    let docker = bin.join("docker");
+    fs::write(
+        &docker,
+        format!(
+            "#!/bin/sh\nwhile [ ! -e '{}' ]; do [ -d '{}' ] || exit 1; sleep 0.05; done\n[ \"$1\" = system ] && echo '2.5GB (40%)'\nexit 0\n",
             gate.display(),
             bin.display()
         ),
@@ -1146,7 +1188,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join("blob"), vec![7u8; 64 * 1024]).unwrap();
     }
-    blocking_docker(&bin, &gate);
+    answering_docker(&bin, &gate);
     let (mut child, port, token) = spawn_live(&home, &bin);
     let mut stream = open_events(port, &token);
     listed_paths(&mut stream, &[&take, &keep]);
@@ -1184,19 +1226,24 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         .0,
         200
     );
-    let code = child.wait().unwrap().code();
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()
-        .unwrap()
-        .read_to_string(&mut stdout)
-        .unwrap();
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "approval keeps the session open"
+    );
     fs::write(&gate, "").unwrap();
-    assert_eq!(code, Some(0), "{stdout}");
-    let lines: Vec<&str> = stdout.lines().collect();
-    let run = Path::new(lines[0]);
-    assert_eq!(Path::new(lines[1]), run.join("selection.json"));
+    let rest = read_until(&mut stream, "done");
+    assert!(
+        rest.iter().any(|(n, d)| n == "item"
+            && d["item"]["path"] == "cmd:docker-prune"
+            && d["item"]["checking"] != true),
+        "approval never stops the scan; a row listed after it still arrives: {rest:?}"
+    );
+    assert!(
+        !rest
+            .iter()
+            .any(|(n, d)| n == "item" && d["item"]["path"] == take_s),
+        "an approved path is never listed again"
+    );
 
     let scan = fs::read_to_string(run.join("scan.tsv")).unwrap();
     assert!(scan.ends_with('\n'), "{scan}");
@@ -1210,12 +1257,9 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         .collect();
     assert!(recorded.contains(&take.to_str().unwrap()));
     assert!(recorded.contains(&keep.to_str().unwrap()));
-    assert!(
-        !recorded.contains(&"cmd:docker-prune"),
-        "rows still being checked are never recorded"
-    );
+    assert!(recorded.contains(&"cmd:docker-prune"));
     let sel: Value =
-        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string(run.join("decisions/1.json")).unwrap()).unwrap();
     let chosen: Vec<&str> = sel["items"]
         .as_array()
         .unwrap()
@@ -1226,7 +1270,15 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     assert_eq!(sel["mode"], "trash");
     common::assert_inside_ram_disk(&take);
 
-    let dry = common::cli(&["clean", "--dry-run", run.to_str().unwrap()], &home, &[]);
+    let woke = common::cli(&["wait", run.to_str().unwrap()], &home, &[]);
+    assert_eq!(woke.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&woke.stdout).starts_with("decision 1 "));
+    let run_s = run.to_str().unwrap();
+    let dry = common::cli(
+        &["clean", "--dry-run", run_s, "--decision", "1"],
+        &home,
+        &[],
+    );
     assert_eq!(dry.status.code(), Some(0));
     let dry = String::from_utf8_lossy(&dry.stdout).into_owned();
     assert!(
@@ -1235,7 +1287,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
     );
     assert!(!dry.contains(keep.to_str().unwrap()), "{dry}");
 
-    let real = common::cli(&["clean", run.to_str().unwrap()], &home, &[]);
+    let real = common::cli(&["clean", run_s, "--decision", "1"], &home, &[]);
     assert_eq!(
         real.status.code(),
         Some(0),
@@ -1243,7 +1295,7 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         String::from_utf8_lossy(&real.stderr)
     );
     common::wait_for("the cleanup", std::time::Duration::from_secs(20), || {
-        fs::read_to_string(run.join("status")).is_ok_and(|s| s.trim() == "done")
+        fs::read_to_string(run.join("decisions/1/status")).is_ok_and(|s| s.trim() == "done")
     });
     assert!(
         !take.exists(),
@@ -1254,13 +1306,54 @@ fn approving_while_the_scan_runs_uses_what_was_listed() {
         "a listed but unapproved path stays"
     );
     assert!(never.join("blob").is_file(), "a path never listed stays");
-    let trashed: Vec<Value> = common::events_of(run)
+    let trashed: Vec<Value> = common::events_of(&run)
         .into_iter()
         .filter(|e| e["event"] == "trashed")
         .collect();
     assert_eq!(trashed.len(), 1);
     assert_eq!(trashed[0]["path"], take.to_str().unwrap());
+    assert_eq!(trashed[0]["decision"], 1);
     common::assert_record_inside_ram_disk(&home);
+
+    let after = read_until(&mut stream, "disk");
+    assert!(
+        after
+            .iter()
+            .any(|(n, d)| n == "unlisted" && d["path"] == take_s),
+        "the moved row leaves the list: {after:?}"
+    );
+    let keep_s = keep.to_str().unwrap();
+    assert!(
+        !after
+            .iter()
+            .any(|(n, d)| n == "unlisted" && d["path"] == keep_s)
+    );
+    let listed = Some(lines_in(&run));
+    assert_eq!(
+        post_reply(
+            port,
+            "/decide",
+            &picks_body(&token, "approve", &run, &[take_s], listed)
+        )
+        .0,
+        409,
+        "a moved path cannot be approved again"
+    );
+    let (status, answer) = post_reply(
+        port,
+        "/decide",
+        &picks_body(&token, "approve", &run, &[keep_s], listed),
+    );
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&answer).unwrap()["decision"],
+        2,
+        "a second round in the same session"
+    );
+    let stdout = stop_session(&mut child, &run, &home);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), [run_s]);
+    let closed = read_until(&mut stream, "closed");
+    assert_eq!(closed.last().unwrap().0, "closed");
 }
 
 #[test]
@@ -1284,7 +1377,6 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         common::bin(&home)
             .args(["review", &common::text(&run)])
             .env("DISK_CLEAN_NO_BROWSER", "1")
-            .env("DISK_CLEAN_WATCH_START", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
     );
@@ -1336,9 +1428,9 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         "none exist on disk"
     );
     assert_eq!(post_reply(port, "/decide", &body).0, 200);
-    assert_eq!(child.wait().unwrap().code(), Some(0));
+    stop_session(&mut child, &run, &home);
     let sel: Value =
-        serde_json::from_str(&fs::read_to_string(run.join("selection.json")).unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string(run.join("decisions/1.json")).unwrap()).unwrap();
     let mut chosen: Vec<String> = sel["items"]
         .as_array()
         .unwrap()
