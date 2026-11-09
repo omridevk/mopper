@@ -298,11 +298,16 @@ pub fn stream_events(out: &mut TcpStream, dir: &Path) {
     }
     let mut follower = follower(dir, false);
     let mut quiet = Instant::now();
+    let mut replayed = false;
     loop {
         let mut chunk: String = next_events(&mut follower)
             .iter()
             .map(|(name, event)| sse(name, &event.to_string()))
             .collect();
+        if !replayed {
+            chunk.push_str(&sse("replayed", "{}"));
+            replayed = true;
+        }
         if chunk.is_empty() && http::client_gone(out) {
             return;
         }

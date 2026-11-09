@@ -242,6 +242,20 @@ fn review_serves_page_and_writes_selection() {
         "approvals are written to clean.log: {log}"
     );
 
+    assert_eq!(get(port, "/clean-events?token=wrong").0, 403);
+    let mut log = open_stream(port, "/clean-events", &token);
+    let replayed = read_until(&mut log, "approved");
+    assert_eq!(
+        replayed.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["started", "approved"],
+        "the page's cleanup stream replays the whole log of record"
+    );
+    let mut line = String::new();
+    while line.trim_end() != "event: replayed" {
+        line.clear();
+        assert!(log.read_line(&mut line).unwrap() > 0, "no replayed marker");
+    }
+
     let woke = common::cli(&["wait", &common::text(&run)], &home, &[]);
     assert_eq!(woke.status.code(), Some(0));
     assert_eq!(
@@ -326,12 +340,16 @@ fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
 }
 
 fn open_events(port: u16, token: &str) -> BufReader<TcpStream> {
+    open_stream(port, "/events", token)
+}
+
+fn open_stream(port: u16, route: &str, token: &str) -> BufReader<TcpStream> {
     let mut s = common::connect(port);
     s.set_read_timeout(Some(std::time::Duration::from_secs(30)))
         .unwrap();
     write!(
         s,
-        "GET /events?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+        "GET {route}?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
     )
     .unwrap();
     let mut reader = BufReader::new(s);
