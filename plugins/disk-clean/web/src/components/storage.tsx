@@ -9,7 +9,7 @@ import {Link, useNavigate} from '@tanstack/react-router'
 import {Fragment, useMemo, useRef, useState, type RefObject} from 'react'
 import {Badge} from '@/components/ui/badge'
 import {ChartBoundary} from './chart-boundary'
-import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, changedAgo, CopyPath, Meter, shareOf} from './chart-card'
+import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, changedAgo, CopyPath, Meter, SelectForDelete, shareOf} from './chart-card'
 import {RISK_BAR} from './cleanup'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
 import {formatBytes, plural, tilde, type TreeNode} from '@/lib/data'
@@ -83,6 +83,8 @@ interface Figures extends Disk {
 
 export const READING = 'Reading the disk…'
 
+const SELECTED_STROKE = '#3b82f6'
+
 interface FolderCardProps {
   node: TreeNode | null
   zoomTo: TreeNode | null
@@ -107,6 +109,7 @@ function FolderCard({node, zoomTo, folders, parents, total, home, pinned, dismis
         </CardLink>
       )}
       <CopyPath path={node.path} />
+      {!node.rest && !isDiskRoot(node.path) && <SelectForDelete path={node.path} />}
     </>
   )
   return (
@@ -213,9 +216,13 @@ function storageDefinition(
   shape: Shape,
   focus: string,
   cleanable: Set<string>,
+  selected: Set<string>,
   scene: RefObject<ChartScene | null>,
 ) {
-  const stroke = (node: {data: Row | null}) => (node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a')
+  const stroke = (node: {data: Row | null}) => {
+    if (node.data && selected.has(node.data.id)) return SELECTED_STROKE
+    return node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a'
+  }
   const focusNode = flat.byPath.get(focus)
   const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
   const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
@@ -275,7 +282,9 @@ function storageDefinition(
 
 function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: TreeNode | null, shape: Shape, focus: string, cleanable: Set<string>) {
   const scene = useRef<ChartScene | null>(null)
-  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, cleanable, scene) : null), [flat, tree, shape, focus, cleanable])
+  const {rowSelection} = useSelection()
+  const selected = useMemo(() => new Set(Object.keys(rowSelection).filter(path => rowSelection[path] === true)), [rowSelection])
+  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, cleanable, selected, scene) : null), [flat, tree, shape, focus, cleanable, selected])
   const onRender = ({scene: rendered}: {scene: ChartScene}) => {
     scene.current = rendered
   }
@@ -300,7 +309,7 @@ function drillTarget(point: ChartPoint | null, flat: ReturnType<typeof flatten>,
     if (!parent || parent.path === focus) break
     node = parent
   }
-  return node?.children.length ? node : null
+  return node && !node.rest && !node.file ? node : null
 }
 
 function Crumbs({chain, folders}: {chain: readonly TreeNode[]; folders: ReadonlyMap<string, Folder>}) {
@@ -334,6 +343,11 @@ function Details({shown, focusNode, total, cleanable, shape}: {shown: TreeNode; 
       {shown !== focusNode ? ` · ${((shown.bytes / focusNode.bytes) * 100).toFixed(1)}% of ${focusNode.name}` : ''}
     </div>
     {cleanable.has(shown.path) && <Badge className="self-start bg-blue-400/15 text-blue-300">cleanable</Badge>}
+    {!shown.rest && !isDiskRoot(shown.path) && (
+      <div className="self-start">
+        <SelectForDelete path={shown.path} />
+      </div>
+    )}
     <div className="mt-2 flex flex-col gap-1 border-t pt-3">
       {shown.children.slice(0, 8).map(k => (
         <div key={k.path} className="flex items-center gap-2 text-xs">
@@ -343,7 +357,7 @@ function Details({shown, focusNode, total, cleanable, shape}: {shown: TreeNode; 
       ))}
     </div>
     <p className="mt-auto text-xs text-muted-foreground">
-      Click a {shape === 'sunburst' ? 'ring' : 'tile'} to pin its card and zoom in from there, a crumb to go back. White outlines mark folders the Cleanup tab can delete.
+      Click a {shape === 'sunburst' ? 'ring' : 'tile'} to pin its card and zoom in from there, a crumb to go back. White outlines mark folders the Cleanup tab can delete, blue ones what is selected for delete.
     </p>
   </aside>
   )

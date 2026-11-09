@@ -61,6 +61,8 @@ pub struct Node {
     pub children: Vec<Node>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub rest: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
 }
 
 pub fn parse_row(f: &[&str]) -> Option<(Value, Item)> {
@@ -180,12 +182,8 @@ fn dirname(p: &str) -> &str {
     }
 }
 
-pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
-    let path = run_dir.join("map.tsv");
-    if !path.exists() {
-        return None;
-    }
-    let rows = util::read_lines(&path)
+fn tsv_rows(path: &Path) -> Vec<(i64, i64, i64, String)> {
+    util::read_lines(path)
         .iter()
         .filter_map(|line| {
             let parts: Vec<&str> = line.split('\t').collect();
@@ -202,8 +200,73 @@ pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
                 p.to_string(),
             ))
         })
+        .collect()
+}
+
+pub fn load_map(run_dir: &Path, home: &str, used: i64) -> Option<Node> {
+    let path = run_dir.join("map.tsv");
+    if !path.exists() {
+        return None;
+    }
+    map_tree(tsv_rows(&path), home, used)
+}
+
+const FILE_FLOOR: u64 = 1_048_576;
+
+fn leaf(path: &str, bytes: i64, files: i64, mtime: i64, file: bool) -> Node {
+    Node {
+        name: path.rsplit('/').next().unwrap_or("").to_string(),
+        path: path.to_string(),
+        bytes,
+        files,
+        mtime,
+        children: Vec::new(),
+        rest: false,
+        file,
+    }
+}
+
+pub fn folder(run_dir: &Path, path: &str) -> Option<Node> {
+    let rows = tsv_rows(&run_dir.join("index.tsv"));
+    let (bytes, files, mtime, _) = rows.iter().find(|r| r.3 == path)?.clone();
+    let mut kids: Vec<Node> = rows
+        .iter()
+        .filter(|r| r.3 != path && dirname(&r.3) == path)
+        .map(|(b, f, m, p)| leaf(p, *b, *f, *m, false))
         .collect();
-    map_tree(rows, home, used)
+    let mut entries = 0i64;
+    for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
+        entries += 1;
+        let Ok(m) = entry.metadata() else { continue };
+        let meta = platform::meta_of(&m);
+        let allocated = meta.blocks * 512;
+        if meta.kind != crate::walk::Kind::File || meta.nlink > 1 || allocated < FILE_FLOOR {
+            continue;
+        }
+        if let Some(p) = platform::path_text(&entry.path()) {
+            kids.push(leaf(&p, allocated as i64, 1, meta.mtime, true));
+        }
+    }
+    kids.sort_by_key(|k| -k.bytes);
+    let shown: i64 = kids.iter().map(|k| k.bytes).sum();
+    let shown_files: i64 = kids.iter().map(|k| k.files).sum();
+    let rest = (bytes - shown).max(0);
+    if rest > 0 {
+        let hidden = (entries - kids.len() as i64).max(0);
+        kids.push(Node {
+            name: format!("{hidden} smaller items"),
+            path: format!("{path}/*"),
+            bytes: rest,
+            files: (files - shown_files).max(0),
+            mtime: 0,
+            children: Vec::new(),
+            rest: true,
+            file: false,
+        });
+    }
+    let mut node = leaf(path, bytes, files, mtime, false);
+    node.children = kids;
+    Some(node)
 }
 
 pub fn map_tree(rows: Vec<(i64, i64, i64, String)>, home: &str, used: i64) -> Option<Node> {
@@ -280,6 +343,7 @@ fn build(
             mtime: 0,
             children: Vec::new(),
             rest: true,
+            file: false,
         });
     }
     Node {
@@ -290,6 +354,7 @@ fn build(
         mtime,
         children: nodes,
         rest: false,
+        file: false,
     }
 }
 
@@ -650,6 +715,62 @@ fn end_in_page(stream: &mut TcpStream, live: &Live) {
     respond(stream, "200 OK", "application/json", b"{}");
 }
 
+fn pick_row(live: &Live, path: &str) -> Result<String, &'static str> {
+    if live.finished().is_none() {
+        return Err("the scan is still running; add it once the scan finishes");
+    }
+    let home = util::home();
+    clean::safe_to_remove("rm", path, &home, platform::user_tmp_base().as_deref())?;
+    if platform::is_link(Path::new(path)).is_none() {
+        return Err("already gone");
+    }
+    let lines = lines_now(live, None);
+    if lines
+        .iter()
+        .any(|l| l.split('\t').nth(3) != Some("report") && is_at_or_inside(path, path_of(l)))
+    {
+        return Err("already in the cleanup list");
+    }
+    let bytes = crate::walk::size_of(Path::new(path)).map_or(0, |b| b.div_ceil(2) * 1024);
+    Ok(scan::picked_row(&home, util::now(), path, bytes).join("\t"))
+}
+
+fn add_pick(stream: &mut TcpStream, live: &Live, path: &str) {
+    let line = match pick_row(live, path) {
+        Ok(line) => line,
+        Err(reason) => return respond(stream, "409 Conflict", "text/plain", reason.as_bytes()),
+    };
+    let written = std::fs::OpenOptions::new()
+        .append(true)
+        .open(live.dir.join("scan.tsv"))
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = written {
+        let reason = format!("could not record it in scan.tsv: {e}");
+        return respond(
+            stream,
+            "500 Internal Server Error",
+            "text/plain",
+            reason.as_bytes(),
+        );
+    }
+    let finished = listed_in(&live.dir);
+    let count = finished.lines.len();
+    *lock(&live.finished) = Some(Arc::new(finished));
+    let fields: Vec<&str> = line.split('\t').collect();
+    let Some((category, mut item)) = parse_row(&fields) else {
+        return refuse(stream, "500 Internal Server Error");
+    };
+    item.line = Some(count);
+    let body = json!({"category": category, "item": item});
+    live.emit_now("item", body.clone());
+    respond(
+        stream,
+        "200 OK",
+        "application/json",
+        body.to_string().as_bytes(),
+    );
+}
+
 fn approve(stream: &mut TcpStream, live: &Live, payload: &Value) {
     let items = match picked(live, payload) {
         Ok(items) => items,
@@ -761,6 +882,14 @@ fn handle(
                 }
                 "/undo" | "/empty" => page_job(&mut stream, target, &payload, live),
                 "/rescan" => rescan(&mut stream, live),
+                "/children" => match folder(&live.dir, text_of(&payload, "path")) {
+                    Some(node) => {
+                        let body = json!(node).to_string();
+                        respond(&mut stream, "200 OK", "application/json", body.as_bytes())
+                    }
+                    None => refuse(&mut stream, "404 Not Found"),
+                },
+                "/pick" => add_pick(&mut stream, live, text_of(&payload, "path")),
                 "/stop" => stop_session(&mut stream, live, stop),
                 "/preview" => match picked(live, &payload) {
                     Ok(items) => {

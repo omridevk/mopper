@@ -284,8 +284,7 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk, reached: &dyn Fn(&Wa
 }
 
 fn mapped(plan: &Plan, depth: usize, blocks: u64) -> bool {
-    (depth == 0 || blocks.div_ceil(2) >= plan.map_min_kb)
-        && plan.map_depth.is_some_and(|m| depth <= m)
+    plan.map_depth.is_some() && (depth == 0 || blocks.div_ceil(2) >= plan.map_min_kb)
 }
 
 // Open folders with their size so far: their own blocks plus every open folder below them.

@@ -335,6 +335,7 @@ fn clean_disk_render(data: &Value) -> String {
     disk_clean::review::render(data, "tok")
 }
 
+#[cfg(unix)]
 fn events(port: u16, token: &str, until: &str) -> Vec<(String, Value)> {
     read_until(&mut open_events(port, token), until)
 }
@@ -359,6 +360,7 @@ fn open_stream(port: u16, route: &str, token: &str) -> BufReader<TcpStream> {
     reader
 }
 
+#[cfg(unix)]
 fn latest_growing(events: &[(String, Value)]) -> Vec<(String, Value)> {
     let last = events.iter().rposition(|(n, _)| n == "growing");
     events
@@ -1457,4 +1459,111 @@ fn a_five_thousand_change_selection_previews_approves_and_reloads() {
         .collect();
     chosen.sort();
     assert_eq!(chosen, kept);
+}
+
+#[cfg(unix)]
+fn index_review(
+    tag: &str,
+) -> (
+    common::TempDir,
+    common::Reaped,
+    u16,
+    String,
+    std::path::PathBuf,
+) {
+    let (t, child, port, token) = finished_review(tag);
+    let home = t.0.join("h");
+    let downloads = home.join("Downloads");
+    let inner = downloads.join("installers");
+    fs::create_dir_all(&inner).unwrap();
+    fs::write(downloads.join("movie.mp4"), vec![1u8; 3 * 1024 * 1024]).unwrap();
+    fs::write(downloads.join("note.txt"), b"tiny").unwrap();
+    fs::write(inner.join("app.dmg"), vec![2u8; 2 * 1024 * 1024]).unwrap();
+    let mb = 1024 * 1024;
+    fs::write(
+        t.0.join("run/index.tsv"),
+        format!(
+            "{}\t9\t0\t{}\n{}\t1\t0\t{}\n{}\t3\t0\t{}\n",
+            12 * mb,
+            common::text(&home),
+            2 * mb,
+            common::text(&inner),
+            7 * mb,
+            common::text(&downloads),
+        ),
+    )
+    .unwrap();
+    (t, child, port, token, downloads)
+}
+
+#[cfg(unix)]
+#[test]
+fn children_list_subfolders_big_files_and_a_remainder_that_add_up() {
+    let (_t, _child, port, token, downloads) = index_review("children");
+    let path = common::text(&downloads);
+    let (status, body) = post_reply(
+        port,
+        "/children",
+        &serde_json::json!({"token": token, "path": path}).to_string(),
+    );
+    assert_eq!(status, 200, "{body}");
+    let node: Value = serde_json::from_str(body.split("\r\n\r\n").last().unwrap()).unwrap();
+    let kids = node["children"].as_array().unwrap();
+    let sum: i64 = kids.iter().map(|k| k["bytes"].as_i64().unwrap()).sum();
+    assert_eq!(sum, node["bytes"].as_i64().unwrap(), "{node}");
+    let names: Vec<&str> = kids.iter().map(|k| k["name"].as_str().unwrap()).collect();
+    assert_eq!(names[0], "movie.mp4", "{names:?}");
+    assert!(names.contains(&"installers"), "{names:?}");
+    assert!(
+        names.iter().any(|n| n.ends_with("smaller items")),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"note.txt"), "{names:?}");
+    assert_eq!(kids[0]["file"], serde_json::json!(true));
+    let unknown = common::text(&downloads.join("nope"));
+    let (status, _) = post_reply(
+        port,
+        "/children",
+        &serde_json::json!({"token": token, "path": unknown}).to_string(),
+    );
+    assert_eq!(status, 404);
+    let (status, _) = post_reply(
+        port,
+        "/children",
+        &serde_json::json!({"token": "wrong", "path": path}).to_string(),
+    );
+    assert_eq!(status, 403);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pick_is_checked_by_the_safety_rules_and_lands_in_scan_tsv_once() {
+    let (t, _child, port, token, downloads) = index_review("pick");
+    let home = common::text(&t.0.join("h"));
+    let pick = |path: &str| {
+        post_reply(
+            port,
+            "/pick",
+            &serde_json::json!({"token": token, "path": path}).to_string(),
+        )
+    };
+    let (status, body) = pick(&home);
+    assert_eq!(status, 409);
+    assert!(body.ends_with("protected path"), "{body}");
+    let (status, body) = pick(&format!("{home}/Documents"));
+    assert_eq!(status, 409, "{body}");
+    let movie = common::text(&downloads.join("movie.mp4"));
+    let (status, body) = pick(&movie);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"picked\""), "{body}");
+    let scan = fs::read_to_string(t.0.join("run/scan.tsv")).unwrap();
+    let row = scan
+        .lines()
+        .find(|l| l.contains(&movie))
+        .expect("picked row in scan.tsv");
+    assert!(row.starts_with("picked\tPicked by you\t"), "{row}");
+    assert!(row.contains("\treview\t1\trm\t"), "{row}");
+    let (status, body) = pick(&movie);
+    assert_eq!(status, 409);
+    assert!(body.ends_with("already in the cleanup list"), "{body}");
 }

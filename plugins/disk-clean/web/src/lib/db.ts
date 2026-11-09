@@ -2,10 +2,12 @@ import {createCollection} from '@tanstack/db'
 import {QueryClient} from '@tanstack/query-core'
 import {useRouteContext} from '@tanstack/react-router'
 import {CLEANUP_TYPES, createCleanupStore, decisionOf, type Planned, isWorkerEvent, receiveCleanup, startRound, type CleanupEvent, type Round} from './cleanup-feed'
-import {outermost, sumBytes, type Loaded, type TrashEntry} from './data'
+import {ancestorsOf, outermost, sumBytes, type Loaded, type TrashEntry} from './data'
 import {ownedCollection} from './owned'
 import {createQueries} from './queries'
-import {createScanStore, receiveScan, type ScanEvent} from './scan-feed'
+import {children} from './api'
+import {isDiskRoot} from './platform'
+import {createScanStore, nodeAt, receiveScan, within, type ScanEvent} from './scan-feed'
 import {openEventSource, stream, type Listener} from './stream'
 
 export type Link = 'live' | 'reconnecting' | 'lost'
@@ -249,3 +251,51 @@ export function useDb() {
 }
 
 export type {Planned}
+
+const REMEMBERED = 'disk-clean:folders'
+
+function remembered(): Record<string, string> {
+  try {
+    return JSON.parse(sessionStorage.getItem(REMEMBERED) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+function remember(db: Base, path: string) {
+  const known = remembered()
+  for (const folder of db.scan.folders.synced.values()) if (within(folder.path, path)) known[folder.token] = folder.path
+  try {
+    sessionStorage.setItem(REMEMBERED, JSON.stringify(known))
+  } catch {
+    return
+  }
+}
+
+const loading = new Map<string, Promise<void>>()
+
+export function loadFolder(db: Base, path: string) {
+  const state = db.scan.scan.synced.get('scan')
+  const node = nodeAt(state?.tree ?? null, path)
+  if (!node || node.file || node.rest || isDiskRoot(path) || state?.loaded.some(done => done.path === path)) return Promise.resolve()
+  const known = loading.get(path)
+  if (known) return known
+  const load = children(db.loaded.token, path)
+    .then(loaded => {
+      if (!Array.isArray(loaded.children)) return
+      receiveScanEvents(db, [{type: 'children', data: {node: loaded, elapsed_ms: 0}}])
+      remember(db, path)
+    })
+    .finally(() => loading.delete(path))
+  loading.set(path, load)
+  return load
+}
+
+export async function folderOfToken(db: Base, token: string) {
+  const found = db.scan.folders.synced.get(token)
+  if (found) return found
+  const path = remembered()[token]
+  if (!path) return undefined
+  for (const step of [...ancestorsOf(path), path]) await loadFolder(db, step).catch(() => undefined)
+  return db.scan.folders.synced.get(token) ?? [...db.scan.folders.synced.values()].find(folder => folder.path === path)
+}

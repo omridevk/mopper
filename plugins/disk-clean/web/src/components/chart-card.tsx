@@ -3,7 +3,11 @@ import {tooltip} from '@tanstack/charts/tooltip'
 import {Link, type LinkOptions} from '@tanstack/react-router'
 import {useState, type ReactNode} from 'react'
 import {Button, buttonVariants} from '@/components/ui/button'
+import {pick} from '@/lib/api'
 import {formatBytes} from '@/lib/data'
+import {useDb} from '@/lib/db'
+import {useSelection} from '@/lib/page-data'
+import {useListed} from '@/lib/views'
 import {usePlatform} from '@/lib/platform'
 
 export const CARD_TOOLTIP = {
@@ -108,6 +112,34 @@ export function CopyPath({path}: {path: string}) {
   return (
     <Button size="xs" variant="outline" onClick={copy}>
       {said}
+    </Button>
+  )
+}
+
+const reasonOf = (e: unknown) => (e instanceof Error && 'text' in e && typeof e.text === 'string' && e.text ? e.text : String(e))
+
+export function SelectForDelete({path}: {path: string}) {
+  const db = useDb()
+  const {rowSelection, setRowSelection} = useSelection()
+  const listed = useListed(db, path)
+  const [note, setNote] = useState<{path: string; text: string} | null>(null)
+  const on = listed && rowSelection[path] === true
+  const said = note?.path === path && !(listed && note.text === 'Adding…') ? note.text : ''
+  const toggle = () => {
+    if (listed)
+      return setRowSelection(prev => {
+        const {[path]: _was, ...rest} = prev
+        return on ? rest : {...rest, [path]: true}
+      })
+    setNote({path, text: 'Adding…'})
+    pick(db.loaded.token, path).then(
+      () => undefined,
+      (e: unknown) => setNote({path, text: `Not added: ${reasonOf(e)}`}),
+    )
+  }
+  return (
+    <Button size="xs" variant={on ? 'default' : 'outline'} aria-pressed={on} onClick={toggle} disabled={said === 'Adding…'}>
+      {said || (on ? 'Selected · remove' : 'Select for delete')}
     </Button>
   )
 }

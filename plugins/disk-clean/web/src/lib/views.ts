@@ -15,7 +15,7 @@ export function useScanState(db: Db): ScanState {
   return first(data, db.scan.scan.synced.get('scan') ?? NO_SCAN)
 }
 
-const NO_SCAN: ScanState = {id: 'scan', walked: true, done: true, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, rescans: 0, listed: 0, caughtUp: true, home: 0, reclaimable: 0, tree: null, insights: null}
+const NO_SCAN: ScanState = {id: 'scan', walked: true, done: true, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, rescans: 0, listed: 0, caughtUp: true, home: 0, reclaimable: 0, tree: null, insights: null, gone: [], loaded: []}
 const NO_DISK: Disk = {id: 'disk', total: 0, used: 0, free: 0, snapshots: 0}
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
 
@@ -105,6 +105,19 @@ export function useCleanable(db: Db) {
         .select(({i}) => ({path: i.path})),
   })
   return useMemo(() => new Set(data.map(row => row.path)), [data])
+}
+
+export function useListed(db: Db, path: string) {
+  const items = db.scan.items.collection
+  const {data} = useLiveQuery({
+    queryKey: ['listed', items.id, path],
+    query: q =>
+      q
+        .from({i: items})
+        .where(({i}) => eq(i.report, false))
+        .fn.where(({i}) => i.path === path),
+  })
+  return data.length > 0
 }
 
 export function useInside(db: Db, path: string, on: RowSelectionState) {

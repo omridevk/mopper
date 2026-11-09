@@ -32,6 +32,7 @@ export interface TreeNode {
   mtime: number
   children: TreeNode[]
   rest?: boolean
+  file?: boolean
 }
 
 export interface Insights {

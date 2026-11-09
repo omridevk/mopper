@@ -6,7 +6,7 @@ import {scaleLinear} from 'd3-scale'
 import {useMemo, type ReactNode} from 'react'
 import {ChartBoundary} from './chart-boundary'
 import {READING} from './storage'
-import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, CopyPath, Fact, Meter, shareOf} from './chart-card'
+import {BigBytes, CARD_TOOLTIP, CardLink, ChartCard, CopyPath, Fact, Meter, SelectForDelete, shareOf} from './chart-card'
 import {formatBytes, sumBytes, type Category, type Insights as InsightsData, untilde} from '@/lib/data'
 import {useDb} from '@/lib/db'
 import {zoomLink, type Folder} from '@/lib/folders'
@@ -141,6 +141,7 @@ function FolderAge({data, folders}: {data: InsightsData['age_by_folder']; folder
                     </CardLink>
                   )}
                   <CopyPath path={untilde(d.folder, home)} />
+                  <SelectForDelete path={untilde(d.folder, home)} />
                 </>
               }
             >
@@ -248,6 +249,7 @@ export function Insights() {
   const {insights, walked} = useScanState(db)
   const folders = useFolders(db)
   const categories = useCategories(db)
+  const home = useHome()
   const {path} = usePlatform()
   return (
     <div className="grid grid-cols-2 gap-4 overflow-auto px-7 py-5">
@@ -278,6 +280,7 @@ export function Insights() {
                 <span className="grow truncate font-mono">{path(f.path)}</span>
                 <span className="text-muted-foreground tabular-nums">{new Date(f.mtime * 1000).toLocaleDateString()}</span>
                 <span className="w-16 text-right tabular-nums">{formatBytes(f.bytes)}</span>
+                <SelectForDelete path={untilde(f.path, home)} />
               </div>
             ))}
           </div>

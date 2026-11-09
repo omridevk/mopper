@@ -356,3 +356,36 @@ fn growing_snapshots_are_connected_and_only_grow() {
         disk_clean::insights::to_json(&out.insights, &days, now, &home)
     );
 }
+
+#[test]
+fn the_map_keeps_folders_at_any_depth_above_its_floor() {
+    let t = common::temp_dir("map-deep");
+    let root = t.0.join("r");
+    let deep = root.join("1/2/3/4/5/6/7/8");
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("big"), vec![7u8; 2 * 1024 * 1024]).unwrap();
+    fs::write(root.join("1/small"), b"x").unwrap();
+    fs::create_dir_all(root.join("1/2/tiny")).unwrap();
+    let plan = walk::Plan {
+        map_depth: Some(2),
+        map_min_kb: 1024,
+        ..walk::Plan::default()
+    };
+    let mut out = walk::Walk::default();
+    walk::walk(
+        &root,
+        &root,
+        &plan,
+        false,
+        &mut HashSet::new(),
+        &mut out,
+        &|_, _, _| {},
+        &|_| {},
+    );
+    let mapped: Vec<&Path> = out.map.iter().map(|(p, ..)| p.as_path()).collect();
+    assert!(mapped.contains(&deep.as_path()), "{mapped:?}");
+    assert!(
+        !mapped.contains(&root.join("1/2/tiny").as_path()),
+        "{mapped:?}"
+    );
+}

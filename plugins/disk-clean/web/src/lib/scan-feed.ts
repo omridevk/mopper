@@ -23,6 +23,7 @@ export type ScanEvent =
   | {type: 'rescan'; data: Timed<object>}
   | {type: 'unlisted'; data: Timed<{path: string}>}
   | {type: 'replayed'; data: Timed<object>}
+  | {type: 'children'; data: Timed<{node: TreeNode}>}
 
 export interface Entry extends Item {
   section: string
@@ -68,6 +69,8 @@ export interface ScanState {
   reclaimable: number
   tree: TreeNode | null
   insights: Insights | null
+  gone: {path: string; bytes: number}[]
+  loaded: TreeNode[]
 }
 
 const NO_PROGRESS: ScanProgress = {id: 'progress', files: 0, bytes: 0, dir: ''}
@@ -100,6 +103,8 @@ function startState(loaded: Loaded): ScanState {
     reclaimable: data.reclaimable,
     tree: data.tree,
     insights: data.insights ?? null,
+    gone: [],
+    loaded: [],
   }
 }
 
@@ -155,7 +160,7 @@ interface Batch {
 
 type Handlers = {[K in ScanEvent['type']]: (batch: Batch, data: Extract<ScanEvent, {type: K}>['data'], store: ScanStore) => void}
 
-export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, listed: 0, tree: null, insights: null, home: 0}
+export const RESTART: Partial<ScanState> = {walked: false, done: false, error: '', worktrees: 0, stopped: false, elapsed: 0, walkedAt: 0, listed: 0, tree: null, insights: null, home: 0, gone: [], loaded: []}
 
 function takeItem(batch: Batch, {category, item}: {category: CategoryHead; item: Item}) {
   batch.heads.set(category.id, category)
@@ -174,6 +179,49 @@ function stillChecking(store: ScanStore, batch: Batch) {
   return [...latest.values()].filter(e => e.checking === true).map(e => e.path)
 }
 
+export const within = (path: string, outer: string) => path === outer || path.startsWith(outer.endsWith('/') ? outer : `${outer}/`)
+
+function graft(node: TreeNode, loaded: TreeNode): TreeNode {
+  if (!within(loaded.path, node.path)) return node
+  if (node.path === loaded.path) {
+    const known = new Map(node.children.map(child => [child.path, child]))
+    return {...node, children: loaded.children.map(child => (known.get(child.path)?.children.length ? (known.get(child.path) ?? child) : child))}
+  }
+  return {...node, children: node.children.map(child => graft(child, loaded))}
+}
+
+export function nodeAt(node: TreeNode | null, path: string): TreeNode | null {
+  if (!node || !within(path, node.path)) return null
+  if (node.path === path) return node
+  for (const child of node.children) {
+    const found = child.rest ? null : nodeAt(child, path)
+    if (found) return found
+  }
+  return null
+}
+
+function shrink(node: TreeNode, path: string, bytes: number): TreeNode | null {
+  if (node.path === path) return null
+  if (node.rest || !within(path, node.path)) return node
+  const inChild = node.children.some(child => !child.rest && within(path, child.path))
+  const children = node.children.flatMap(child => {
+    if (!child.rest) {
+      const kept = shrink(child, path, bytes)
+      return kept ? [kept] : []
+    }
+    if (inChild) return [child]
+    const left = child.bytes - bytes
+    return left > 0 ? [{...child, bytes: left}] : []
+  })
+  return {...node, bytes: Math.max(0, node.bytes - bytes), children}
+}
+
+function rebuilt(tree: TreeNode | null, {loaded, gone}: Pick<ScanState, 'loaded' | 'gone'>) {
+  if (!tree) return tree
+  const grown = loaded.reduce(graft, tree)
+  return gone.reduce<TreeNode | null>((node, {path, bytes}) => (node ? shrink(node, path, bytes) : node), grown)
+}
+
 const HANDLERS: Handlers = {
   disk: (batch, {total, used, free, snapshots}) => {
     batch.disk = {id: 'disk', total, used, free, snapshots}
@@ -183,10 +231,10 @@ const HANDLERS: Handlers = {
   },
   item: takeItem,
   growing: (batch, {tree, insights}) => {
-    batch.state = {...batch.state, tree: tree ?? batch.state.tree, insights}
+    batch.state = {...batch.state, tree: tree ? rebuilt(tree, batch.state) : batch.state.tree, insights}
   },
   walked: (batch, {home, tree, insights, worktrees, elapsed_ms}) => {
-    batch.state = {...batch.state, home, tree, insights, worktrees, walked: true, walkedAt: elapsed_ms}
+    batch.state = {...batch.state, home, tree: rebuilt(tree, batch.state), insights, worktrees, walked: true, walkedAt: elapsed_ms}
   },
   done: (batch, {reclaimable}, store) => {
     if (batch.state.rescans > 0) {
@@ -196,8 +244,15 @@ const HANDLERS: Handlers = {
     batch.removed.push(...stillChecking(store, batch))
     batch.state = {...batch.state, reclaimable, done: true, caughtUp: true}
   },
-  unlisted: (batch, {path}) => {
+  unlisted: (batch, {path}, store) => {
     batch.removed.push(path)
+    const {tree, gone} = batch.state
+    if (!tree || gone.some(outer => within(path, outer.path))) return
+    const bytes = nodeAt(tree, path)?.bytes ?? store.items.synced.get(path)?.bytes ?? 0
+    batch.state = {...batch.state, tree: shrink(tree, path, bytes), gone: [...gone, {path, bytes}]}
+  },
+  children: (batch, {node}) => {
+    if (batch.state.tree) batch.state = {...batch.state, tree: graft(batch.state.tree, node), loaded: [...batch.state.loaded, node]}
   },
   error: (batch, {message}) => {
     batch.state = {...batch.state, error: message, caughtUp: true}

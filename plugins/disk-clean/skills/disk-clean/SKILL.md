@@ -52,7 +52,7 @@ The run directory holds `scan.tsv` (cleanable items, appended as each one is lis
 so an approval made mid-scan is validated against exactly what was shown; rows still being checked
 are never in it), `map.tsv` (size tree), `disk.tsv` (volume
 totals, snapshot count, and `too_deep`: folders nested too deep to read, also reported on stderr),
-`insights.json` (home files by modified day, age per folder, kind, and the largest files), and one
+`index.tsv` (every folder of at least 10 MB, any depth, for the Storage tab), `insights.json` (home files by modified day, age per folder, kind, and the largest files), and one
 numbered decision per approval: `decisions/<n>.json` (the selection, its mode and the plan the
 confirm dialog showed) and a working folder `decisions/<n>/` for its cleanup. `session.json` (port,
 token, pid) exists while the session is open. `clean.log` and `clean.events` are the one log of
@@ -65,8 +65,9 @@ Every command refuses to run with an empty, relative or missing `HOME`.
 
 Tunable via environment variables: `DISK_CLEAN_MIN_BYTES` (default 10 MB floor per item),
 `DISK_CLEAN_STALE_DAYS` (default 90), `DISK_CLEAN_BIGFILE_BYTES` (default 1 GB),
-`DISK_CLEAN_OLD_DOWNLOAD_DAYS` (default 180), `DISK_CLEAN_MAP_DEPTH` (default 5),
-`DISK_CLEAN_MAP_MIN_BYTES` (default 200 MB), `DISK_CLEAN_NM_DEPTH` (default 9),
+`DISK_CLEAN_OLD_DOWNLOAD_DAYS` (default 180), `DISK_CLEAN_MAP_MIN_BYTES` (default 200 MB, the
+folders drawn on the first map, at any depth), `DISK_CLEAN_INDEX_MIN_BYTES` (default 10 MB, the
+folders the Storage tab can open, at any depth), `DISK_CLEAN_NM_DEPTH` (default 9),
 `DISK_CLEAN_NM_MIN_BYTES` (default 5 MB), `DISK_CLEAN_SKIP_MAP=1` to skip the storage map
 and walk only the home and temp folders instead of the whole volume.
 
@@ -80,11 +81,16 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   all, `r` reset, `v` switch view). Sections with more than three items get a quick-select row —
   **all N · idle 90+ days · idle 1+ year · none**. Banners warn when selected items are hidden by a
   filter and when anything marked `review` is selected.
-- **Storage** — read-only. A **sunburst** or **treemap** of the whole data volume (click to zoom in,
+- **Storage** — a **sunburst** or **treemap** of the whole data volume (click to zoom in,
   breadcrumbs to go back up, white outlines mark folders the Cleanup tab can delete), an inspector
   for the hovered folder, and the reconciliation of the whole disk (home folder + rest of the data
-  volume + macOS system volume and APFS reserve + free = total). This is where the space this skill
-  *cannot* reclaim shows up.
+  volume + macOS system volume and APFS reserve + free = total). Any folder opens, at any depth:
+  zooming in loads its subfolders (from `index.tsv`, every folder of 10 MB or more), its files of
+  1 MB or more, and one "N smaller items" remainder, so every level adds up to its folder. **Add to
+  cleanup** (on a pinned card or in the inspector) puts a folder or file into a "Picked by you"
+  section of the Cleanup tab, risk review, after the same safety checks `clean` uses (a protected
+  path is refused with its reason); it is then deleted like any other row. Folders moved to the
+  Trash by a cleanup round leave the map without a rescan.
 - **Insights** — read-only charts: bytes by last-modified day over the past year, the age of the
   largest folders under `~`, bytes by file kind, cleanup sections by idle time, and the largest files.
 - **Trash** — every item disk-clean put in the Trash, across runs, from its record after a sync:

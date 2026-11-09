@@ -1,4 +1,4 @@
-import type {TrashEntry} from './data'
+import type {TrashEntry, TreeNode} from './data'
 
 export type Mode = 'trash' | 'now'
 
@@ -54,6 +54,14 @@ async function post(url: string, payload: string) {
 
 export function preview(token: string, selected: Selected): Promise<Plan> {
   return post('/preview', JSON.stringify({token, ...selected}))
+}
+
+export function children(token: string, path: string): Promise<TreeNode> {
+  return post('/children', JSON.stringify({token, path}))
+}
+
+export function pick(token: string, path: string) {
+  return post('/pick', JSON.stringify({token, path}))
 }
 
 export function rescan(token: string) {

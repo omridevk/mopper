@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 pub type Row = [String; 13];
 
+const TRACK_DEPTH: usize = 5;
+
 pub struct Config {
     pub min_bytes: u64,
     pub stale_days: i64,
@@ -25,7 +27,7 @@ pub struct Config {
     pub old_download_days: i64,
     pub max_report_items: usize,
     pub map_min_bytes: u64,
-    pub map_depth: usize,
+    pub index_min_bytes: u64,
     pub nm_depth: usize,
     pub nm_min_bytes: u64,
     pub skip_map: bool,
@@ -40,7 +42,7 @@ impl Config {
             old_download_days: util::env_num("DISK_CLEAN_OLD_DOWNLOAD_DAYS", 180),
             max_report_items: util::env_num("DISK_CLEAN_MAX_REPORT_ITEMS", 40),
             map_min_bytes: util::env_num("DISK_CLEAN_MAP_MIN_BYTES", 209_715_200),
-            map_depth: util::env_num("DISK_CLEAN_MAP_DEPTH", 5),
+            index_min_bytes: util::env_num("DISK_CLEAN_INDEX_MIN_BYTES", 10_485_760),
             nm_depth: util::env_num("DISK_CLEAN_NM_DEPTH", 9),
             nm_min_bytes: util::env_num("DISK_CLEAN_NM_MIN_BYTES", 5_242_880),
             skip_map: std::env::var("DISK_CLEAN_SKIP_MAP").is_ok_and(|v| v == "1"),
@@ -109,6 +111,30 @@ pub(crate) fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
         return None;
     }
     walk::size_with(path, ctx.parallel).map(kb_bytes)
+}
+
+pub(crate) fn picked_row(home: &str, now: i64, path: &str, bytes: u64) -> Row {
+    let cat = Cat {
+        id: "picked",
+        title: "Picked by you",
+        desc: "Folders and files you selected in Storage or Insights. Check each one before you delete it.",
+        risk: "review",
+        pre: "1",
+    };
+    let age = fs::symlink_metadata(path).map_or("-".to_string(), |m| {
+        ((now - platform::meta_of(&m).mtime) / 86400).to_string()
+    });
+    row(
+        &cat,
+        "rm",
+        "-",
+        &tilde(path, home),
+        path,
+        bytes,
+        "Selected by you.",
+        &age,
+        "exact",
+    )
 }
 
 pub(crate) fn age_of(ctx: &Ctx, path: &Path) -> String {
@@ -253,8 +279,8 @@ fn plan(cfg: &Config, home: &str, now: i64, tmp_base: Option<&str>) -> Plan {
     let (roots, never) = platform::drives_to_walk(home);
     Plan {
         home: PathBuf::from(home),
-        map_depth: (!cfg.skip_map).then_some(cfg.map_depth),
-        map_min_kb: cfg.map_min_bytes / 1024,
+        map_depth: (!cfg.skip_map).then_some(TRACK_DEPTH),
+        map_min_kb: cfg.index_min_bytes.min(cfg.map_min_bytes) / 1024,
         nm_depth: cfg.nm_depth,
         dev_depth: 7,
         big_depth: 6,
@@ -621,10 +647,8 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             sims
         });
         let (on_listed, on_checked) = (&on_listed, &on_checked);
-        let checks = s.spawn(move || {
-            platform::utility_qos();
-            worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked)
-        });
+        let checks =
+            s.spawn(move || worktrees::check_repos(repo_rx, listed_tx, on_listed, on_checked));
 
         let pkg_cache = platform::probe_pkg_cache();
         let fixed: Vec<PathBuf> = plan.exact.iter().cloned().collect();
@@ -699,11 +723,17 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
             .map
             .iter()
             .map(|(p, b, f, m)| (p.as_path(), *b, *f, *m));
-        let map: String = map_rows(finished, min_kb)
-            .into_iter()
-            .map(|(bytes, files, mtime, s)| format!("{bytes}\t{files}\t{mtime}\t{s}\n"))
-            .collect();
-        util::write_atomic(&run_dir.join("map.tsv"), map.as_bytes())?;
+        let tsv = |min_kb: u64| -> String {
+            map_rows(finished.clone(), min_kb)
+                .into_iter()
+                .map(|(bytes, files, mtime, s)| format!("{bytes}\t{files}\t{mtime}\t{s}\n"))
+                .collect()
+        };
+        util::write_atomic(&run_dir.join("map.tsv"), tsv(min_kb).as_bytes())?;
+        util::write_atomic(
+            &run_dir.join("index.tsv"),
+            tsv(cfg.index_min_bytes / 1024).as_bytes(),
+        )?;
         util::write_atomic(
             &run_dir.join("insights.json"),
             insights.to_string().as_bytes(),

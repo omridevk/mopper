@@ -263,7 +263,16 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub const POST_ROUTES: [&str; 6] = ["/decide", "/preview", "/rescan", "/undo", "/empty", "/stop"];
+pub const POST_ROUTES: [&str; 8] = [
+    "/decide",
+    "/preview",
+    "/rescan",
+    "/undo",
+    "/empty",
+    "/stop",
+    "/children",
+    "/pick",
+];
 
 pub const STREAMS: [&str; 2] = ["/events", "/clean-events"];
 

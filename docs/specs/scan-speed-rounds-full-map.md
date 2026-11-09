@@ -75,13 +75,14 @@ What the user must be able to do, end to end:
   depth into an index kept in memory and written to the run dir as `index.tsv` (same columns as
   map.tsv), so `review RUN_DIR` serves it too. map.tsv and the `tree` in `growing` / `walked` keep
   the 200 MB floor, at any depth.
-- `GET /children?token=..&path=..` answers one folder's contents, sorted by size:
+- `POST /children {token, path}` answers one folder's contents, sorted by size (a POST like the
+  other page calls, so the path never sits in a URL):
   - subfolders from the index, with size, file count and modified time;
   - files of at least 1 MB, read from the folder at request time (one `read_dir`, allocated size,
     hard links counted once as the walk counts them);
   - one remainder entry, "N smaller items", with the bytes that make the listed entries add up
     exactly to the folder's size from the walk.
-  - A path not in the index answers 404. The token check is the same as `/events`.
+  - A path not in the index answers 404. A wrong token answers 403.
 - Every folder in the page tree and every `/children` answer adds up to its parent's size. The
   remainder entry is what makes it add up; it is never negative (if a folder changed since the
   walk, clamp to zero and the parent shows the walk's size).
@@ -91,11 +92,18 @@ What the user must be able to do, end to end:
 - Storage zooms into any folder at any depth. When the page tree has no children for a folder, it
   asks `/children` and draws the answer the same way (sunburst, treemap, inspector). The remainder
   entry is drawn as one neutral slice / tile named "N smaller items".
-- The Storage address keeps working for any depth (`/storage/<folder path>`), reload included.
+- Every folder the page opens is loaded once, also a folder already on the first map (its small
+  contents were one "everything else" slice there); subfolders the map already drew keep their
+  drawn children.
+- The Storage address keeps working for any depth (`/storage/<folder token>`), reload included: the
+  page keeps the token of every folder it loaded in sessionStorage, and a reload loads the folders
+  on the way down again. Loaded folders and folders moved by a round survive the replayed `walked`
+  event.
 - Any folder or file in Storage can be added to the cleanup: a "Add to cleanup" action in the
-  inspector. The server checks it with the same safety rules `clean` uses (`safe_to_remove` and
+  inspector, once the scan has finished (during the scan `scan.tsv` is still being written). The
+  server checks it with the same safety rules `clean` uses (`safe_to_remove` and
   the protected paths); a refusal shows its reason and adds nothing. An accepted path becomes a row
-  of a "Picked in Storage" section, risk `review`, selected, and goes through the same confirm,
+  of a "Picked by you" section, risk `review`, selected, and goes through the same confirm,
   dry run, Trash, Undo and Empty as every other row. A picked path inside an already listed path,
   or containing one, counts once, as today.
 - After a cleanup round (B) the map shrinks by what was moved: folders moved to the Trash leave the
