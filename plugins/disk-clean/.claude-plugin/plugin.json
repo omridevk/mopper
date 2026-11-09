@@ -1,6 +1,6 @@
 {
   "name": "disk-clean",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Find reclaimable disk space on macOS, Linux and Windows, review every item in a browser UI, then delete only what you approve. Includes safe cleanup of git worktrees that hold no leftover work.",
   "author": {
     "name": "Omri Katz",
