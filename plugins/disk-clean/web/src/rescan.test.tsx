@@ -1,10 +1,11 @@
 import {afterEach, describe, expect, inject, test, vi} from 'vitest'
+import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {NO_DATA, type Insights, type Loaded, type TreeNode} from './lib/data'
 import type {CategoryHead, ScanEvent} from './lib/scan-feed'
 import {at, item} from './test/fixture'
-import {fakeEventSource} from './test/page'
+import {fakeEventSource, ringPoints} from './test/page'
 import './index.css'
 
 const GB = 1024 ** 3
@@ -83,6 +84,38 @@ describe('Rescan on a big finished scan', () => {
       if (step % 4 === 3) send({type: 'growing', data: {tree, insights, elapsed_ms: step * 100}})
       await pause(50)
     }
+    await frame()
+    watch.stop()
+    expect(Math.max(0, ...watch.tasks)).toBeLessThan(LONGEST_TASK_MS)
+  })
+
+  test('on /storage after the walk, Select for delete outlines the folder without blocking the page', async () => {
+    const {source, send} = fakeEventSource()
+    const screen = await render(<App loaded={{...LIVE, openEvents: () => source}} history={at('/storage')} />)
+    const folder: ScanEvent = {type: 'item', data: {category: heads[0]!, item: item('/Users/you/d0', tree.children[0]!.bytes, {preselect: false}), elapsed_ms: 100}}
+    for (const event of [disk, ...items, folder, {type: 'walked', data: {home: tree.bytes, tree, insights, worktrees: 0, elapsed_ms: 5000}}, {type: 'done', data: {reclaimable: GB, elapsed_ms: 9000}}] as ScanEvent[]) send(event)
+    const chart = screen.getByLabelText(/^Storage sunburst of /)
+    await expect.element(chart).toBeVisible()
+    await expect.element(screen.getByRole('button', {name: 'Rescan'})).toBeEnabled()
+    const sector = ringPoints(chart.element())(0.02, 0)
+    await userEvent.click(chart, {position: sector.local})
+    const pinned = screen.getByRole('dialog')
+    await expect.element(pinned.getByText('~/d0', {exact: true})).toBeVisible()
+    await frame()
+    await frame()
+    const strokeAt = () => {
+      const painted = document.elementFromPoint(sector.client.x, sector.client.y)
+      return painted ? getComputedStyle(painted).stroke : ''
+    }
+    expect(strokeAt()).toBe('rgb(250, 250, 250)')
+
+    const watch = watchLongTasks()
+    await pinned.getByRole('button', {name: 'Select for delete'}).click()
+    await expect.element(pinned.getByRole('button', {name: 'Selected · remove'})).toHaveAttribute('aria-pressed', 'true')
+    await expect.poll(strokeAt).toBe('rgb(59, 130, 246)')
+    await pinned.getByRole('button', {name: 'Selected · remove'}).click()
+    await expect.element(pinned.getByRole('button', {name: 'Select for delete'})).toHaveAttribute('aria-pressed', 'false')
+    await expect.poll(strokeAt).toBe('rgb(250, 250, 250)')
     await frame()
     watch.stop()
     expect(Math.max(0, ...watch.tasks)).toBeLessThan(LONGEST_TASK_MS)

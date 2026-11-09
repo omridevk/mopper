@@ -84,6 +84,8 @@ interface Figures extends Disk {
 export const READING = 'Reading the disk…'
 
 const SELECTED_STROKE = '#3b82f6'
+const CLEANABLE_STROKE = '#fafafa'
+const PLAIN_STROKE = '#0a0a0a'
 
 interface FolderCardProps {
   node: TreeNode | null
@@ -215,14 +217,8 @@ function storageDefinition(
   tree: TreeNode,
   shape: Shape,
   focus: string,
-  cleanable: Set<string>,
-  selected: Set<string>,
   scene: RefObject<ChartScene | null>,
 ) {
-  const stroke = (node: {data: Row | null}) => {
-    if (node.data && selected.has(node.data.id)) return SELECTED_STROKE
-    return node.data && cleanable.has(node.data.id) ? '#fafafa' : '#0a0a0a'
-  }
   const focusNode = flat.byPath.get(focus)
   const hueOf = new Map((focusNode?.children ?? []).map((child, i) => [child.path, HUES[i % HUES.length] ?? 210]))
   const fill = (branch: string, depth: number) => tone(hueOf.get(branch) ?? 210, depth)
@@ -246,7 +242,7 @@ function storageDefinition(
             visibleDepth: 3,
             innerRadius: ({radius}) => radius * 0.28,
             fill: node => fill(node.branchId ?? node.id, node.depth),
-            stroke,
+            stroke: PLAIN_STROKE,
             strokeWidth: 1,
           }),
         ],
@@ -270,7 +266,7 @@ function storageDefinition(
         label: node => node.data?.name ?? node.name,
         labelFill: '#09090b',
         radius: 3,
-        stroke,
+        stroke: PLAIN_STROKE,
         strokeWidth: 1,
         states: [{when: {focus: 'unmatched'}, style: {opacity: 0.28}, transition: {type: 'tween', duration: 250, easing: 'ease-out'}}],
       }),
@@ -285,12 +281,19 @@ function useDrawn(paths: Iterable<string>, flat: ReturnType<typeof flatten> | nu
   return useMemo(() => new Set(key === '' ? [] : key.split('\0')), [key])
 }
 
-function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: TreeNode | null, shape: Shape, focus: string, cleanable: Set<string>) {
-  const scene = useRef<ChartScene | null>(null)
+const outlineOf = (paths: ReadonlySet<string>, stroke: string) =>
+  paths.size === 0 ? '' : `${[...paths].map(path => `.storage-chart :is(path, rect)[data-ts-key$="${CSS.escape(`:node:string:${path.length}:${path}`)}"]`).join(',')}{stroke:${stroke}}`
+
+function useOutlines(flat: ReturnType<typeof flatten> | null, cleanable: ReadonlySet<string>) {
   const {rowSelection} = useSelection()
   const selected = useDrawn(Object.keys(rowSelection).filter(path => rowSelection[path] === true), flat)
   const outlined = useDrawn(cleanable, flat)
-  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, outlined, selected, scene) : null), [flat, tree, shape, focus, outlined, selected])
+  return useMemo(() => outlineOf(outlined, CLEANABLE_STROKE) + outlineOf(selected, SELECTED_STROKE), [outlined, selected])
+}
+
+function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: TreeNode | null, shape: Shape, focus: string) {
+  const scene = useRef<ChartScene | null>(null)
+  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, scene) : null), [flat, tree, shape, focus])
   const onRender = ({scene: rendered}: {scene: ChartScene}) => {
     scene.current = rendered
   }
@@ -391,7 +394,8 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const focus = focusOf(flat, root, zoom)
   const navigate = useNavigate()
   const [hover, setHover] = useState<TreeNode | null>(null)
-  const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
+  const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus)
+  const outlines = useOutlines(flat, cleanable)
   const snapshot = useSnapshot(tree, walked)
   const reshape = (next: Shape) => navigate({to: '.', search: prev => ({...prev, shape: next})})
 
@@ -419,6 +423,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
       <div className="grid grid-cols-[minmax(0,1fr)_280px] gap-6">
         <ChartBoundary resetKey={`${shape}:${focus}`}>
           <div className="storage-chart" data-hovering={hover !== null}>
+            <style>{outlines}</style>
             <Chart
               key={snapshot}
               definition={definition}
