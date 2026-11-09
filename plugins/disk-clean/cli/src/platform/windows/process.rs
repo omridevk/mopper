@@ -25,10 +25,6 @@ pub fn utility_qos() {
     let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
 }
 
-pub fn efficiency_cores() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
-}
-
 pub fn open_in_browser(url: &str) -> io::Result<()> {
     let url = HSTRING::from(url);
     // SAFETY: COM is initialised for this thread as ShellExecuteW asks and released only if this call initialised it; ShellExecuteW reads the two NUL-terminated strings.

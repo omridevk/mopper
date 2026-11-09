@@ -97,16 +97,22 @@ pub fn read_dir_bulk(dir: &Path) -> std::io::Result<Vec<(OsString, Option<Meta>)
     let Ok(c) = CString::new(dir.as_os_str().as_bytes()) else {
         return Ok(out);
     };
-    // SAFETY: open has no memory preconditions beyond a valid C string.
-    let fd = unsafe {
-        libc::open(
-            c.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
+    let fd = loop {
+        // SAFETY: open has no memory preconditions beyond a valid C string.
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if fd >= 0 {
+            break fd;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
     };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
     let mut list = libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -128,6 +134,9 @@ pub fn read_dir_bulk(dir: &Path) -> std::io::Result<Vec<(OsString, Option<Meta>)
                 0,
             )
         };
+        if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
         if n <= 0 {
             break;
         }

@@ -53,6 +53,7 @@ pub(crate) struct Ctx {
     now: i64,
     walk: Walk,
     parallel: bool,
+    known_only: bool,
 }
 
 fn early(home: &str, now: i64, parallel: bool) -> Ctx {
@@ -61,7 +62,21 @@ fn early(home: &str, now: i64, parallel: bool) -> Ctx {
         now,
         walk: Walk::default(),
         parallel,
+        known_only: false,
     }
+}
+
+fn known_part(walk: &Walk, fixed: &[PathBuf]) -> Walk {
+    let mut part = Walk {
+        children: walk.children.clone(),
+        ..Walk::default()
+    };
+    for path in fixed.iter().chain(part.children.values().flatten()) {
+        if let Some(blocks) = walk.sizes.get(path) {
+            part.sizes.insert(path.clone(), *blocks);
+        }
+    }
+    part
 }
 
 pub(crate) struct Cat<'a> {
@@ -89,6 +104,9 @@ pub(crate) fn size_bytes(ctx: &Ctx, path: &Path) -> Option<u64> {
         })
     {
         return Some(kb_bytes(*r));
+    }
+    if ctx.known_only {
+        return None;
     }
     walk::size_with(path, ctx.parallel).map(kb_bytes)
 }
@@ -272,6 +290,7 @@ fn run_walk(
     tmp_base: Option<&str>,
     mount: &Path,
     progress: &dyn Fn(&Walk, &Path, &[walk::Open]),
+    reached: &dyn Fn(&Walk),
 ) -> Walk {
     let mut out = Walk::default();
     let mut seen = HashSet::new();
@@ -283,15 +302,21 @@ fn run_walk(
         roots.extend(tmp_base.map(PathBuf::from));
         roots.retain(|r| r.is_dir() && !on_a_drive(r));
         for root in &roots {
-            walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
+            walk::walk(
+                root, root, &plan, true, &mut seen, &mut out, progress, reached,
+            );
         }
     } else {
-        walk::walk(mount, home_root, &plan, true, &mut seen, &mut out, progress);
+        walk::walk(
+            mount, home_root, &plan, true, &mut seen, &mut out, progress, reached,
+        );
         drives.retain(|root| root != home_root);
         plan.map_depth = None;
     }
     for root in &drives {
-        walk::walk(root, root, &plan, true, &mut seen, &mut out, progress);
+        walk::walk(
+            root, root, &plan, true, &mut seen, &mut out, progress, reached,
+        );
     }
     out
 }
@@ -463,7 +488,6 @@ fn interrupted() -> io::Error {
 }
 
 pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Result<()> {
-    platform::utility_qos();
     let _ = rayon::ThreadPoolBuilder::new()
         .start_handler(|_| platform::utility_qos())
         .build_global();
@@ -603,18 +627,30 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
         });
 
         let pkg_cache = platform::probe_pkg_cache();
-        let fixed = early(home, now, true);
-        let mut rows: Vec<Row> = Vec::new();
-        platform::scan_trash_and_tools(&fixed, &mut rows, cfg, pkg_cache.as_deref());
-        platform::scan_app_data(&fixed, &mut rows, cfg);
-        preview(&rows, out, sink);
-        eprintln!(
-            "  sized {} fixed locations in {:.1}s",
-            rows.len(),
-            started.elapsed().as_secs_f64()
-        );
+        let fixed: Vec<PathBuf> = plan.exact.iter().cloned().collect();
+        let reached = |w: &Walk| {
+            let ctx = Ctx {
+                home: home.clone(),
+                now,
+                walk: known_part(w, &fixed),
+                parallel: false,
+                known_only: true,
+            };
+            let mut rows: Vec<Row> = Vec::new();
+            platform::scan_trash_and_tools(&ctx, &mut rows, cfg, pkg_cache.as_deref());
+            platform::scan_app_data(&ctx, &mut rows, cfg);
+            preview(&rows, out, sink);
+        };
 
-        let mut walked = run_walk(cfg, plan, home, tmp_base.as_deref(), &mount, &progress);
+        let mut walked = run_walk(
+            cfg,
+            plan,
+            home,
+            tmp_base.as_deref(),
+            &mount,
+            &progress,
+            &reached,
+        );
         if cancel.load(Ordering::Relaxed) {
             return Err(interrupted());
         }
@@ -640,6 +676,7 @@ pub fn scan(run_dir: &Path, sink: &dyn Sink, cancel: Arc<AtomicBool>) -> io::Res
                 now,
                 walk: walked,
                 parallel: false,
+                known_only: false,
             });
             std::mem::take(&mut *waiting)
         };

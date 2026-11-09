@@ -34,8 +34,9 @@ list and show the accepted forms (`C D`, `C,D`, `all`).
 
 It creates a run directory under `~/.cache/disk-clean/`, opens a local page in the default browser
 right away, and scans in the background while the page fills in: a live counter during the walk
-(one to three minutes, a single parallel walk of the data volume), then the cleanup list, storage
-map and insights, then the git worktree checks and Docker/Homebrew/simulator probes. Delete
+(about a minute and a half for 8 million files, longer while other work keeps the disk busy; a
+single parallel walk of the data volume), then the cleanup list, storage map and insights, then
+the git worktree checks and Docker/Homebrew/simulator probes. Delete
 works while the scan is still running: every item already on screen can be deleted. Worktree rows
 and the Docker and simulator command rows show "checking…" in place of their checkbox until their
 check answers. Confirming Delete during the scan stops it and approves what was found so far. The

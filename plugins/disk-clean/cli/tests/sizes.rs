@@ -96,6 +96,7 @@ fn map_dirs_carry_file_count_and_newest_mtime() {
         &mut HashSet::new(),
         &mut out,
         &|_, _, _| {},
+        &|_| {},
     );
     let stat = |p: &Path| {
         out.map
@@ -171,6 +172,7 @@ fn walked(root: &Path, plan: walk::Plan, parallel: bool) -> (walk::Walk, Option<
         &mut HashSet::new(),
         &mut out,
         &|_, _, _| {},
+        &|_| {},
     );
     drop(plan);
     let mut repos: Vec<String> = repo_rx
@@ -310,6 +312,7 @@ fn growing_snapshots_are_connected_and_only_grow() {
                 .borrow_mut()
                 .push((finished, rows_of(open.iter().copied())));
         },
+        &|_| {},
     );
     let snapshots = snapshots.into_inner();
     assert!(snapshots.len() >= 2, "{} snapshots", snapshots.len());

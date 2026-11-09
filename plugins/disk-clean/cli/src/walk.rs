@@ -264,7 +264,7 @@ fn start(plan: &Plan) -> Home {
     }
 }
 
-fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
+fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk, reached: &dyn Fn(&Walk)) -> u64 {
     let Some(f) = stack.pop() else { return 0 };
     if let Some(p) = stack.last_mut() {
         p.blocks += f.blocks;
@@ -273,6 +273,9 @@ fn pop(stack: &mut Vec<Frame>, plan: &Plan, out: &mut Walk) -> u64 {
     }
     if f.track {
         out.sizes.insert(f.path.clone(), f.blocks);
+    }
+    if f.path != plan.home && (plan.exact.contains(&f.path) || plan.parents.contains(&f.path)) {
+        reached(out);
     }
     if mapped(plan, f.depth, f.blocks) {
         out.map.push((f.path, f.blocks, f.files, f.mtime));
@@ -348,6 +351,7 @@ impl Ord for Soonest {
 }
 
 const READ_AHEAD: usize = 1 << 18;
+const READERS_PER_CPU: usize = 4;
 
 #[derive(Default)]
 struct Queue {
@@ -393,7 +397,7 @@ struct Reader {
     pruned: HashSet<PathBuf>,
     ahead: Option<Ahead>,
     cancel: Arc<AtomicBool>,
-    home_first: Option<Arc<Path>>,
+    first: Vec<PathBuf>,
     scout: Option<Arc<Scout>>,
     too_deep: Arc<AtomicU64>,
 }
@@ -421,14 +425,20 @@ fn list(dir: &Path, from: Option<&Job>, reader: &Reader) -> Vec<Entry> {
             Some((name, meta))
         })
         .collect();
-    let toward_home = reader
-        .home_first
-        .as_deref()
-        .and_then(|home| home.strip_prefix(dir).ok())
-        .and_then(|rest| rest.components().next())
-        .and_then(|step| found.iter().position(|(name, _)| name == step.as_os_str()));
-    if let Some(i) = toward_home {
-        found[..=i].rotate_right(1);
+    let steps: Vec<&OsStr> = reader
+        .first
+        .iter()
+        .filter(|target| target.as_os_str().len() > dir.as_os_str().len())
+        .filter_map(|target| target.strip_prefix(dir).ok()?.components().next())
+        .map(|step| step.as_os_str())
+        .collect();
+    if !steps.is_empty() {
+        found.sort_by_key(|(name, _)| {
+            steps
+                .iter()
+                .position(|step| step == name)
+                .unwrap_or(usize::MAX)
+        });
     }
     if let Some(scout) = &reader.scout {
         scout_repo(scout, dir, &found);
@@ -550,6 +560,7 @@ fn open(next: Next, reader: &Reader) -> Vec<Entry> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn walk(
     root: &Path,
     logical: &Path,
@@ -558,9 +569,10 @@ pub fn walk(
     seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path, &[Open]),
+    reached: &dyn Fn(&Walk),
 ) -> Option<u64> {
     let root_meta = platform::meta_at(root)?;
-    let threads = platform::efficiency_cores();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) * READERS_PER_CPU;
     let reader = Reader {
         dev: root_meta.dev,
         pruned: if plan.map_depth.is_none() {
@@ -570,11 +582,12 @@ pub fn walk(
         },
         ahead: parallel.then(Ahead::default),
         cancel: Arc::clone(&plan.cancel),
-        home_first: plan
-            .home
-            .strip_prefix(logical)
-            .ok()
-            .map(|rest| Arc::from(root.join(rest))),
+        first: std::iter::once(&plan.home)
+            .chain(&plan.exact)
+            .chain(&plan.parents)
+            .filter_map(|path| path.strip_prefix(logical).ok())
+            .map(|rest| root.join(rest))
+            .collect(),
         scout: plan.repo_tx.clone().map(|repos| {
             Arc::new(Scout {
                 repos,
@@ -590,10 +603,7 @@ pub fn walk(
         let _stop = Stop(reader.ahead.as_ref());
         if reader.ahead.is_some() {
             for _ in 0..threads {
-                s.spawn(|| {
-                    platform::utility_qos();
-                    read_ahead(&reader)
-                });
+                s.spawn(|| read_ahead(&reader));
             }
         }
         let mut queued = Vec::new();
@@ -605,12 +615,15 @@ pub fn walk(
             meta: root_meta,
             next,
         };
-        let total = consume(root_entry, logical, plan, &reader, seen, out, progress);
+        let total = consume(
+            root_entry, logical, plan, &reader, seen, out, progress, reached,
+        );
         out.too_deep += reader.too_deep.load(Ordering::Relaxed);
         total
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn consume(
     root_entry: Entry,
     logical: &Path,
@@ -619,6 +632,7 @@ fn consume(
     seen: &mut HashSet<(u64, u64, u64)>,
     out: &mut Walk,
     progress: &dyn Fn(&Walk, &Path, &[Open]),
+    reached: &dyn Fn(&Walk),
 ) -> Option<u64> {
     let mut pending: Vec<(usize, std::vec::IntoIter<Entry>)> =
         vec![(0, vec![root_entry].into_iter())];
@@ -647,7 +661,7 @@ fn consume(
         let meta = entry.meta;
         let file_name = entry.name;
         while stack.last().is_some_and(|f| f.depth >= depth) {
-            let blocks = pop(&mut stack, plan, out);
+            let blocks = pop(&mut stack, plan, out, reached);
             if stack.is_empty() {
                 total = Some(blocks);
             }
@@ -775,7 +789,7 @@ fn consume(
         }
     }
     while !stack.is_empty() {
-        let blocks = pop(&mut stack, plan, out);
+        let blocks = pop(&mut stack, plan, out, reached);
         if stack.is_empty() {
             total = Some(blocks);
         }
@@ -796,5 +810,6 @@ pub fn size_with(path: &Path, parallel: bool) -> Option<u64> {
         &mut HashSet::new(),
         &mut Walk::default(),
         &|_, _, _| {},
+        &|_| {},
     )
 }

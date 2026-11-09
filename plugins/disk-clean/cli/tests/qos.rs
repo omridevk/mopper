@@ -4,7 +4,6 @@ mod common;
 
 use disk_clean::scan::{self, Sink};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -32,7 +31,7 @@ impl Sink for Threads {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn every_scan_thread_that_reports_runs_at_utility_qos() {
+fn the_walk_runs_at_default_qos_and_the_worktree_checks_at_utility_qos() {
     let t = common::temp_dir("scan-qos");
     let home = t.0.join("home");
     fs::create_dir_all(home.join("code")).unwrap();
@@ -57,16 +56,22 @@ fn every_scan_thread_that_reports_runs_at_utility_qos() {
         "the test thread starts at its default class"
     );
     let sink = Threads(Mutex::new(Vec::new()));
-    std::thread::scope(|s| {
-        s.spawn(|| scan::scan(&run, &sink, Arc::new(AtomicBool::new(false))).unwrap());
+    let scanner = std::thread::scope(|s| {
+        let scanner =
+            s.spawn(|| scan::scan(&run, &sink, Arc::new(AtomicBool::new(false))).unwrap());
+        let id = scanner.thread().id();
+        scanner.join().unwrap();
+        id
     });
     let seen = sink.0.into_inner().unwrap();
-    let threads: HashSet<ThreadId> = seen.iter().map(|(id, _)| *id).collect();
+    let (walk, checks): (Vec<_>, Vec<_>) = seen.iter().partition(|(id, _)| *id == scanner);
+    assert!(!walk.is_empty(), "the scan thread reported: {seen:?}");
+    assert!(!checks.is_empty(), "the worktree checks reported: {seen:?}");
+    assert!(walk.iter().all(|(_, class)| *class != utility), "{seen:?}");
     assert!(
-        threads.len() >= 2,
-        "events came from the worktree checks too: {seen:?}"
+        checks.iter().all(|(_, class)| *class == utility),
+        "{seen:?}"
     );
-    assert!(seen.iter().all(|(_, class)| *class == utility), "{seen:?}");
 }
 
 #[cfg(target_os = "linux")]
@@ -90,7 +95,7 @@ impl Sink for Niceness {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn every_scan_thread_that_reports_runs_at_a_lower_priority() {
+fn the_walk_keeps_its_priority_and_the_worktree_checks_run_lower() {
     let t = common::temp_dir("scan-nice");
     let home = t.0.join("home");
     fs::create_dir_all(home.join("code")).unwrap();
@@ -113,15 +118,18 @@ fn every_scan_thread_that_reports_runs_at_a_lower_priority() {
     }
     let start = nice();
     let sink = Niceness(Mutex::new(Vec::new()));
-    std::thread::scope(|s| {
-        s.spawn(|| scan::scan(&run, &sink, Arc::new(AtomicBool::new(false))).unwrap());
+    let scanner = std::thread::scope(|s| {
+        let scanner =
+            s.spawn(|| scan::scan(&run, &sink, Arc::new(AtomicBool::new(false))).unwrap());
+        let id = scanner.thread().id();
+        scanner.join().unwrap();
+        id
     });
     assert_eq!(nice(), start, "the test thread keeps its priority");
     let seen = sink.0.into_inner().unwrap();
-    let threads: HashSet<ThreadId> = seen.iter().map(|(id, _)| *id).collect();
-    assert!(
-        threads.len() >= 2,
-        "events came from the worktree checks too: {seen:?}"
-    );
-    assert!(seen.iter().all(|(_, n)| *n > start), "{seen:?}");
+    let (walk, checks): (Vec<_>, Vec<_>) = seen.iter().partition(|(id, _)| *id == scanner);
+    assert!(!walk.is_empty(), "the scan thread reported: {seen:?}");
+    assert!(!checks.is_empty(), "the worktree checks reported: {seen:?}");
+    assert!(walk.iter().all(|(_, n)| *n == start), "{seen:?}");
+    assert!(checks.iter().all(|(_, n)| *n > start), "{seen:?}");
 }

@@ -9,10 +9,6 @@ pub fn utility_qos() {
     unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10) };
 }
 
-pub fn efficiency_cores() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2))
-}
-
 pub fn open_in_browser(url: &str) -> io::Result<()> {
     let mut child = spawn(Command::new("xdg-open").arg(url))?;
     std::thread::spawn(move || child.wait());
