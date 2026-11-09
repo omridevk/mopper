@@ -1,8 +1,8 @@
 import {useHotkeys} from '@tanstack/react-hotkeys'
 import {getRouteApi, Link, linkOptions, Outlet, useLinkProps, useMatch, useNavigate, useParams} from '@tanstack/react-router'
-import {HardDrive} from 'lucide-react'
 import {useRef, useState, useSyncExternalStore, type ReactNode, type RefObject} from 'react'
 import {TAB_LINK, TabLinks} from '@/components/ui/tabs'
+import icon from '@/icon.svg'
 import {bindingsOf, everyCommand, HOTKEY_OPTIONS} from '@/lib/commands'
 import {plural} from '@/lib/data'
 import {useDb, type Action, type Db, type Link as StreamLink} from '@/lib/db'
@@ -115,9 +115,7 @@ function Header({
 }) {
   return (
     <header className="relative flex items-center gap-4 border-b px-7 py-4">
-      <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
-        <HardDrive className="size-4" />
-      </div>
+      <img src={icon} alt="" className="size-8 shrink-0" />
       <div className="flex min-w-0 grow flex-col">
         <h1 className="text-[15px] font-semibold">Disk Clean</h1>
         <Status items={items} progress={progress} phase={phase} link={link} />
