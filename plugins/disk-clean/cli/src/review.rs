@@ -707,10 +707,10 @@ fn rescan(stream: &mut TcpStream, live: &Arc<Live>) {
 fn end_in_page(stream: &mut TcpStream, live: &Live) {
     live.cancel.store(true, Ordering::Relaxed);
     let line = format!(
-        "ended: the user pressed Cancel in the page, so nothing more is deleted; close the session with disk-clean stop {}",
+        "ended: the user pressed End session in the page, so nothing more is deleted; close the session with disk-clean stop {}",
         util::shown(&live.dir)
     );
-    clean::log_line(&live.dir, "the user pressed Cancel in the page");
+    clean::log_line(&live.dir, "the user pressed End session in the page");
     crate::session::notice(&live.dir, "ended", &line);
     respond(stream, "200 OK", "application/json", b"{}");
 }

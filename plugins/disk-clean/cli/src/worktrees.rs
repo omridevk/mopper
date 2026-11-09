@@ -548,18 +548,21 @@ pub fn rows(checked: &[Checked], home: &str, size_of: impl Fn(&Path) -> u64 + Sy
                 }
             };
             let push = match info.unpushed {
-                None => "branch never pushed; its commits stay on the local branch".to_string(),
-                Some(0) => "branch is pushed".to_string(),
-                Some(n) => format!("{n} unpushed commits stay on the local branch"),
+                None => "local only, never pushed".to_string(),
+                Some(0) => "pushed".to_string(),
+                Some(n) => format!("{n} unpushed"),
             };
             let idle = info.idle >= idle_limit;
-            let mut note = format!(
-                "Branch {} is kept, {push}. Re-create with: git worktree add {label} {}",
+            let used = match info.idle as i64 {
+                _ if idle => String::new(),
+                0 => "Used today, so not ticked by default. ".to_string(),
+                1 => "Used 1 day ago, so not ticked by default. ".to_string(),
+                days => format!("Used {days} days ago, so not ticked by default. "),
+            };
+            let note = format!(
+                "{used}Branch {} stays with all its commits ({push}). Re-create with: git worktree add {label} {}",
                 info.branch, info.branch
             );
-            if !idle {
-                note = format!("Active {:.1} days ago. {note}", info.idle);
-            }
             emit(
                 "worktrees",
                 CLEAN_TITLE,

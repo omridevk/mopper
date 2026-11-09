@@ -142,3 +142,34 @@ git worktree add -q --detach ../detached main && (cd ../detached && echo o >o &&
     assert_eq!(single, [0, 1, 2, 0, 2]);
     assert_eq!(batched, single);
 }
+
+#[test]
+fn notes_say_when_a_worktree_was_used_and_where_its_branch_stands() {
+    let checked = |path: &str, idle: f64, unpushed: Option<i64>| worktrees::Checked {
+        entry: [("worktree".to_string(), path.to_string())].into(),
+        blockers: Vec::new(),
+        info: Some(worktrees::Info {
+            branch: "feat".to_string(),
+            unpushed,
+            idle,
+        }),
+    };
+    let rows = worktrees::rows(
+        &[
+            checked("/h/today", 0.4, None),
+            checked("/h/one", 1.2, Some(0)),
+            checked("/h/old", 30.0, Some(3)),
+        ],
+        "/h",
+        |_| 0,
+    );
+    let notes: Vec<&str> = rows.iter().map(|r| r[10].as_str()).collect();
+    assert_eq!(
+        notes,
+        [
+            "Used today, so not ticked by default. Branch feat stays with all its commits (local only, never pushed). Re-create with: git worktree add ~/today feat",
+            "Used 1 day ago, so not ticked by default. Branch feat stays with all its commits (pushed). Re-create with: git worktree add ~/one feat",
+            "Branch feat stays with all its commits (3 unpushed). Re-create with: git worktree add ~/old feat",
+        ]
+    );
+}
