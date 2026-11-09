@@ -4,8 +4,17 @@ type Timed<T> = T & {elapsed_ms: number}
 type JobItem = {job: string; id: string; path: string; trashed_path: string; bytes: number; reason: string}
 type JobCounts = {job: string; kept: number; trashed: number; trashed_bytes: number}
 
+export interface Round {
+  decision: number
+  items: Planned[]
+  bytes: number
+  mode: 'trash' | 'now'
+  trash_run: string
+}
+
 export type CleanupEvent =
-  | {type: 'waiting'; data: object}
+  | {type: 'approved'; data: Timed<Round>}
+  | {type: 'queued'; data: Timed<{decision?: number}>}
   | {type: 'started'; data: Timed<{run: string; free: number; paths: number; trash?: number; worktrees: number; commands: number; bytes: number}>}
   | {type: 'removed'; data: Timed<{path: string; bytes: number; secs: number}>}
   | {type: 'failed'; data: Timed<{path: string; bytes: number; reason: string}>}
@@ -59,7 +68,8 @@ interface Clock {
 }
 
 export const CLEANUP_TYPES: CleanupEvent['type'][] = [
-  'waiting',
+  'approved',
+  'queued',
   'started',
   'removed',
   'trashed',
@@ -83,8 +93,9 @@ export function isWorkerEvent(type: string, data: object) {
   return type !== 'done' || 'free_after' in data
 }
 
-export function nothingLeft({type}: {type: string}) {
-  return type === 'abandoned'
+export function decisionOf(event: CleanupEvent) {
+  const data: object = event.data
+  return 'decision' in data && typeof data.decision === 'number' ? data.decision : 0
 }
 
 function idOf(event: CleanupEvent) {
@@ -151,12 +162,22 @@ function rowOf(run: string, seq: number, event: CleanupEvent, plan: ReadonlyMap<
 }
 
 export function createCleanupStore() {
+  let caughtUp = () => {}
+  const replayed = new Promise<void>(resolve => {
+    caughtUp = resolve
+  })
   return {
+    replayed,
+    caughtUp,
     events: ownedCollection<EventRow>(row => row.id, []),
     clock: ownedCollection<Clock>(row => row.id, [{id: 'clock', at: 0}]),
     latest: new Map<string, string>(),
     run: '',
     seq: 0,
+    decision: 0,
+    settled: false,
+    job: '',
+    later: [] as CleanupEvent[],
   }
 }
 
@@ -178,13 +199,28 @@ function take(store: CleanupStore, event: CleanupEvent, plan: ReadonlyMap<string
     writes.clear()
     store.latest.clear()
   }
-  if (event.type === 'started') store.run = event.data.run
+  if (event.type === 'started') {
+    store.run = event.data.run
+    store.settled = false
+  }
+  if (event.type === 'done' || event.type === 'abandoned') store.settled = true
+  if (event.type === 'empty_started' || event.type === 'undo_started') store.job = event.data.job
+  if ((event.type === 'empty_done' || event.type === 'undo_done') && store.job === event.data.job) store.job = ''
   const row = rowOf(store.run, store.seq, event, plan)
   if (store.events.synced.has(row.id)) return 0
   store.seq += 1
   supersede(store, row, writes)
   writes.put(row)
   return row.at
+}
+
+export function startRound(store: CleanupStore, decision: number, run: string) {
+  store.events.write(writes => writes.clear())
+  store.clock.write(writes => writes.put({id: 'clock', at: 0}))
+  store.latest.clear()
+  store.run = run
+  store.decision = decision
+  store.settled = false
 }
 
 export function receiveCleanup(store: CleanupStore, plan: ReadonlyMap<string, Planned>, events: readonly CleanupEvent[]) {

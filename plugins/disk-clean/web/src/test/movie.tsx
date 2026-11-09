@@ -3,15 +3,16 @@ import {CleanupFilm} from '@/components/cleanup-film'
 import type {CleanupEvent} from '@/lib/cleanup-feed'
 import {createDb, receiveCleanupEvents, type Db} from '@/lib/db'
 import {useMovie} from '@/lib/progress'
-import {cleanupEvents, fixture} from './fixture'
+import {approvedEvent, cleanupEvents, fixture} from './fixture'
 
 export const GB = 1024 ** 3
 export const selected = fixture.data.categories.flatMap(c => c.items.filter(i => i.preselect))
 export const finishedEvents = cleanupEvents as readonly CleanupEvent[]
 
 export function movieDb(events: readonly CleanupEvent[] = []) {
-  const db = createDb({...fixture, approved: selected.map(i => i.path)})
-  receiveCleanupEvents(db, events)
+  const db = createDb(fixture)
+  const approved = events[0]?.type === 'approved' ? [] : [approvedEvent(selected.map(i => i.path)) as CleanupEvent]
+  receiveCleanupEvents(db, [...approved, ...events])
   return db
 }
 

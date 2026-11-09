@@ -89,7 +89,6 @@ export interface Loaded {
   home: string
   platform?: Platform
   live?: boolean
-  approved?: string[]
   trash?: TrashEntry[]
   run?: string
   openEvents?: OpenEvents
@@ -118,10 +117,10 @@ export async function load(): Promise<Loaded> {
   const home = metaOf('disk-clean-home')
   const platform = platformOf(metaOf('disk-clean-platform'))
   if (import.meta.env.DEV && text.trim() === '__DATA__') return loadDev()
-  const parsed: (ScanData | {live: true} | (ScanData & {approved: true; selection: string[]})) & TrashRecord = JSON.parse(text)
+  const parsed: (ScanData | {live: true}) & TrashRecord = JSON.parse(text)
   const record = {platform, trash: parsed.trash ?? [], run: parsed.run ?? ''}
   if ('live' in parsed) return {data: NO_DATA, token, home, live: true, ...record}
-  return 'approved' in parsed ? {data: parsed, token, home, approved: parsed.selection, ...record} : {data: parsed, token, home, ...record}
+  return {data: parsed, token, home, ...record}
 }
 
 export function tilde(path: string, home: string) {

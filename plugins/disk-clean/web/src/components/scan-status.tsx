@@ -43,9 +43,9 @@ export function ScanStatus({scan}: {scan: Scan}) {
   )
 }
 
-export function RescanButton({scan, approved, onRescan}: {scan: Scan; approved: boolean; onRescan: () => void}) {
+export function RescanButton({scan, active, onRescan}: {scan: Scan; active: boolean; onRescan: () => void}) {
   const busy = !scan.done && scan.error === ''
-  if (approved) return null
+  if (active) return null
   return (
     <Button variant="ghost" size="xs" disabled={busy} onClick={onRescan}>
       <RotateCw />

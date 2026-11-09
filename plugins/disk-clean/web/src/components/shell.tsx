@@ -14,7 +14,7 @@ import {CLEANUP_DEFAULTS} from '@/lib/search'
 import {useDisk, usePending, useScanState, useSession} from '@/lib/views'
 import {ActionBar, deleteState, TableDelete, useOpenConfirm} from './action-bar'
 import {ListingContext, useListChange, useListing} from './cleanup'
-import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, TrashActions, trashOffer} from './cleanup-progress'
+import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, RoundResult, TrashActions, trashOffer} from './cleanup-progress'
 import {CommandMenu} from './command-menu'
 import {commandsFor} from './commands'
 import {RequestError} from './request-error'
@@ -61,7 +61,7 @@ function Status({items, progress, phase, link}: {items: number; progress: Cleanu
     )
   }
   if (link !== 'live') return <p className="truncate text-sm leading-5 font-medium text-red-300">{SCAN_LINK[link]}</p>
-  return <p className="truncate text-sm leading-5 text-muted-foreground">{plural(items, 'item', 'items')} found · nothing is deleted until you approve</p>
+  return <p className="truncate text-sm leading-5 text-muted-foreground">Session open · {plural(items, 'item', 'items')} found · nothing is deleted until you approve</p>
 }
 
 const TABS = [
@@ -131,7 +131,7 @@ function StatusSlot({scan, progress, phase}: {scan: ReturnType<typeof useScan>; 
   return scan.tracking && <span className="w-56 shrink-0"><ScanStatus scan={scan.scan} /></span>
 }
 
-function ScanSummary({db, scan, selection, progress, phase, approved}: {db: Db; scan: ReturnType<typeof useScan>; selection: Selection; progress: CleanupProgress | null; phase: Phase; approved: boolean}) {
+function ScanSummary({db, scan, selection, progress, phase, active}: {db: Db; scan: ReturnType<typeof useScan>; selection: Selection; progress: CleanupProgress | null; phase: Phase; active: boolean}) {
   const hero = useScanHero(phase === 'scanning' && scan.live, scan.scan, selection.exactBytes)
   const disk = useDisk(db)
   return (
@@ -144,7 +144,7 @@ function ScanSummary({db, scan, selection, progress, phase, approved}: {db: Db; 
       status={
         <>
           <StatusSlot scan={scan} progress={progress} phase={phase} />
-          <RescanButton scan={scan.scan} approved={approved} onRescan={scan.rescan} />
+          <RescanButton scan={scan.scan} active={active} onRescan={scan.rescan} />
           <RequestError db={db} action="rescan" onRetry={scan.rescan} />
         </>
       }
@@ -199,7 +199,7 @@ export function Shell() {
   const db = useDb()
   const scan = useScan()
   const selection = useSelection()
-  const {progress, phase} = useProgress()
+  const {progress, phase, idle, active} = useProgress()
   const decisions = useDecisions()
   const session = useSession(db)
   const navigate = useNavigate()
@@ -223,12 +223,13 @@ export function Shell() {
   const trashActions = useTrashActions()
   const reduced = useReducedMotion()
   const {deleteNow, path} = usePlatform()
-  const deleteReady = deleteState(selection, scan.scan).ready && !progress
+  const deleteReady = deleteState(selection, scan.scan).ready && !active
+  const round = progress && (active || selection.selected.every(entry => progress.plan.items.has(entry.path))) ? progress : null
   const commands = commandsFor({
     tabs: TABS,
     selection,
-    progress: progress !== null,
-    approved: decisions.approved,
+    progress: active,
+    round: progress !== null,
     scanning: !scan.scan.done && scan.scan.error === '',
     deleteReady,
     deleteNow,
@@ -264,7 +265,7 @@ export function Shell() {
     <div className="flex h-svh flex-col">
       <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={cleanupTrash.actions} />
       <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={onDetails} detailsRef={detailsRef} />
-      <ScanSummary db={db} scan={scan} selection={selection} progress={progress} phase={phase} approved={decisions.approved} />
+      <ScanSummary db={db} scan={scan} selection={selection} progress={round} phase={round ? phase : idle} active={active} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
         <TableDelete value={leaves.find(command => command.scoped) ?? null}>
           <ListingContext value={listing}>
@@ -277,9 +278,10 @@ export function Shell() {
         key={scan.scan.rescans}
         selection={selection}
         scan={scan.scan}
-        progress={progress}
+        progress={active ? progress : null}
         phase={phase}
         actions={cleanupTrash.actions}
+        last={progress && !active ? <RoundResult progress={progress} phase={phase} /> : null}
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
         about={about}
         onAbout={setAbout}

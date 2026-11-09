@@ -10,7 +10,7 @@ interface Sources {
   sections: Collection<CategoryHead, string>
 }
 
-const STATUS_TYPES: CleanupEvent['type'][] = ['waiting', 'started', 'free', 'done', 'abandoned', 'empty_started', 'empty_done', 'undo_started', 'undo_done']
+const STATUS_TYPES: CleanupEvent['type'][] = ['approved', 'queued', 'started', 'free', 'done', 'abandoned', 'empty_started', 'empty_done', 'undo_started', 'undo_done']
 
 function logOf(db: Sources) {
   return createLiveQueryCollection(q => q.from({e: db.events}).orderBy(({e}) => e.seq))

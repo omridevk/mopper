@@ -3,7 +3,7 @@ import {afterEach, beforeEach, describe, expect, test, vi} from 'vitest'
 import {userEvent} from 'vitest/browser'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
-import {category, cleanupEvents, fixture, trashedEvents, item, at, withSection} from './test/fixture'
+import {approvedEvent, category, cleanupEvents, fixture, trashedEvents, item, at, withSection} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, sendAll} from './test/page'
 import './index.css'
 
@@ -23,8 +23,8 @@ async function approved(events: readonly {type: string; data: object}[]) {
   mockServer()
   const {source} = fakeEventSource()
   const paths = ['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b', '/Users/you/Library/Caches/app-c', '/Users/you/Library/Caches/app-d']
-  const screen = await render(<App loaded={{...fixture, approved: paths, openEvents: () => source}} history={at()} />)
-  await sendAll(source, events)
+  const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
+  await sendAll(source, [approvedEvent(paths), ...events.filter(event => event.type !== 'approved')])
   return {screen, source}
 }
 

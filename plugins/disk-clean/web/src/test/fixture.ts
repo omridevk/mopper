@@ -92,8 +92,21 @@ export const onDrive = <T>(value: T): T => JSON.parse(JSON.stringify(value).repl
 
 export const windowsFixture: Loaded = {...onDrive(fixture), platform: 'windows'}
 
+export function approvedEvent(paths: readonly string[], decision = 1, from: readonly Category[] = data.categories) {
+  const chosen = new Set(paths)
+  const items = from.flatMap(c =>
+    c.items.filter(i => chosen.has(i.path)).map(i => ({path: i.path, label: i.label, bytes: i.bytes, section: c.id, exact: i.accuracy === 'exact'})),
+  )
+  return {
+    type: 'approved' as const,
+    data: {decision, items, bytes: items.reduce((sum, i) => sum + i.bytes, 0), mode: 'trash' as const, trash_run: decision === 1 ? RUN : `${RUN}-${decision}`, elapsed_ms: 0},
+  }
+}
+
+export const CACHE_PATHS = ['app-a', 'app-b', 'app-c', 'app-d'].map(name => `/Users/you/Library/Caches/${name}`)
+
 export const cleanupEvents = [
-  {type: 'waiting', data: {}},
+  approvedEvent(CACHE_PATHS),
   {type: 'started', data: {run: 'run-1', free: 50 * GB, paths: 4, worktrees: 1, commands: 0, bytes: 3.75 * GB, elapsed_ms: 0}},
   {type: 'removed', data: {path: '/Users/you/Library/Caches/app-a', bytes: 2 * GB, secs: 1, elapsed_ms: 900}},
   {type: 'free', data: {free: 52 * GB, elapsed_ms: 1000}},

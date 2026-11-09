@@ -534,7 +534,7 @@ export function Cleanup({children}: {children: ReactNode}) {
   const replay = useReveal(listing?.list.view ?? CLEANUP_DEFAULTS.view)
   if (!listing) return null
   const {list, groups, listed, rows, choose, search} = listing
-  const progressed = progress && {progress, removals: progress.removals}
+  const progressed = progress?.active ? {progress, removals: progress.removals} : null
   const on = selection.rowSelection
 
   return (

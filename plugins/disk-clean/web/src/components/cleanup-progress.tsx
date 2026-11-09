@@ -19,7 +19,8 @@ import {SpinningBytes} from './numbers'
 
 const LOG_ROW_HEIGHT = 52
 const LOG_OVERSCAN = 10
-const WAITING = 'Approved · Claude is showing the commands in your terminal'
+const WAITING = 'Approved · waiting for Claude to run it'
+const QUEUED = 'Approved · queued until the cleanup before it finishes'
 
 const FILTERS: Record<LogFilter, (o: Outcome) => boolean> = {
   all: () => true,
@@ -139,11 +140,11 @@ export function BarText({progress, phase}: {progress: CleanupProgress; phase: Ph
   if (phase === 'finished') return <FinishedText progress={progress} />
   if (phase === 'stopped') return <AbandonedText progress={progress} reason={progress.cleanup.abandoned?.reason ?? ''} />
   if (phase === 'trashing' || phase === 'deleting') return <WorkingText progress={progress} verb={WORKING[phase]} />
-  return <span className="t-pulse">{WAITING}</span>
+  return <span className="t-pulse">{phase === 'queued' ? QUEUED : WAITING}</span>
 }
 
 export function ProgressTrack({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
-  const waiting = phase === 'waiting'
+  const waiting = phase === 'waiting' || phase === 'queued'
   return (
     <span aria-hidden className="absolute inset-x-0 -bottom-px h-[3px] overflow-hidden bg-zinc-800">
       <span
@@ -158,6 +159,7 @@ const STATUS_LABEL: Record<Phase, string> = {
   scanning: '',
   reviewing: '',
   waiting: 'Waiting to start',
+  queued: 'Queued',
   trashing: 'Moving to the Trash',
   deleting: 'Deleting',
   trashed: 'In the Trash · undo available',
@@ -167,7 +169,7 @@ const STATUS_LABEL: Record<Phase, string> = {
   stopped: 'Cleanup stopped',
 }
 
-const WORKING_PHASES = new Set<Phase>(['waiting', 'trashing', 'deleting', 'undoing', 'emptying'])
+const WORKING_PHASES = new Set<Phase>(['waiting', 'queued', 'trashing', 'deleting', 'undoing', 'emptying'])
 
 function cleanupStatusOf(phase: Phase) {
   if (phase === 'stopped') return 'error'
@@ -176,7 +178,7 @@ function cleanupStatusOf(phase: Phase) {
 
 export function CleanupStatus({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
   const label = usePlatform().bin(STATUS_LABEL[phase])
-  if (phase === 'waiting') return <span className="t-pulse text-[13px] text-muted-foreground">{label}</span>
+  if (phase === 'waiting' || phase === 'queued') return <span className="t-pulse text-[13px] text-muted-foreground">{label}</span>
   return (
     <LatticeLoader
       key={label}
@@ -240,6 +242,7 @@ export const HERO_LABEL: Record<Phase, string> = {
   scanning: 'Selected to free',
   reviewing: 'Selected to free',
   waiting: 'Approved · waiting to start',
+  queued: 'Approved · queued',
   trashing: 'Moving to the Trash',
   deleting: 'Deleting for good',
   trashed: 'In the Trash · undo available',
@@ -366,6 +369,7 @@ const PANEL_STATE: Record<Phase, string> = {
   scanning: '',
   reviewing: '',
   waiting: 'Waiting for the cleanup to start',
+  queued: 'Queued: it starts when the cleanup before it finishes',
   trashing: 'Moving to the Trash in the background',
   deleting: 'Deleting in the background',
   trashed: "In the Trash: Undo puts everything back, Empty these from Trash deletes them for good",
@@ -432,6 +436,7 @@ const FOOTER_TITLE: Record<Phase, string> = {
   scanning: '',
   reviewing: '',
   waiting: 'Approved: the cleanup runs in the background',
+  queued: 'Approved: queued behind the cleanup before it',
   trashing: 'Moving to the Trash…',
   deleting: 'Deleting for good…',
   trashed: '',
@@ -489,12 +494,26 @@ export function ProgressFooter({progress, phase, actions}: {progress: CleanupPro
         <div className="flex h-5 items-center text-xs whitespace-nowrap text-muted-foreground tabular-nums">
           <FooterFigures progress={progress} />
           <TrashNote phase={phase} />
-          {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved · a new cleanup starts with /disk-clean
+          {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved
         </div>
         <NotDone progress={progress} />
       </div>
       {actions}
     </footer>
+  )
+}
+
+export function RoundResult({progress, phase}: {progress: CleanupProgress; phase: Phase}) {
+  const {bin} = usePlatform()
+  return (
+    <section aria-label="Last cleanup" className="flex flex-col gap-0.5">
+      <p className="truncate text-xs leading-5 whitespace-nowrap text-muted-foreground tabular-nums">
+        <span className="font-semibold text-foreground">{bin(footerTitle(phase, progress))}</span> · <FooterFigures progress={progress} />
+        <TrashNote phase={phase} />
+        {plural(progress.plan.items.size, 'item', 'items')} · {formatBytes(progress.plan.approved)} approved
+      </p>
+      <NotDone progress={progress} />
+    </section>
   )
 }
 

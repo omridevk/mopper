@@ -69,7 +69,6 @@ describe('folder tokens', () => {
 })
 
 describe('no folder names in the address', () => {
-  const APPROVED = ['/Users/you/Library/Caches/app-a', '/Users/you/code/web/node_modules']
 
   beforeEach(() => gsap.globalTimeline.timeScale(20))
   afterEach(() => {
@@ -132,7 +131,7 @@ describe('no folder names in the address', () => {
 
   test('the progress panel and the movie overlays keep folder names out of the address', async () => {
     const {source} = fakeEventSource()
-    const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
+    const loaded = {...fixture, openEvents: () => source}
     const {history, screen} = await open('/cleanup', loaded)
     const {seen, stop} = watch(history)
     sendAll(source, cleanupEvents)

@@ -13,7 +13,7 @@ export interface Page {
   tabs: readonly {id: string; label: string}[]
   selection: Selection
   progress: boolean
-  approved: boolean
+  round: boolean
   scanning: boolean
   deleteReady: boolean
   deleteNow: readonly Hotkey[]
@@ -134,10 +134,10 @@ export function commandsFor(state: Page): Commands {
       ...cleanup.top,
       ...(state.storage ? [page('chart', 'Chart…', 'Filter and view', SHAPES.map(shape => ({id: `shape:${shape}`, name: SHAPE_LABEL[shape], group: 'Filter and view', checked: state.storage?.shape === shape, enabled: state.storage?.drawn === true, run: () => on.reshape(shape)})))] : []),
       ...(ticked ? [] : deletes),
-      {id: 'rescan', name: 'Rescan', group: 'Clean up', enabled: !state.approved && !state.scanning, run: on.rescan},
+      {id: 'rescan', name: 'Rescan', group: 'Clean up', enabled: !progress && !state.scanning, run: on.rescan},
       page('cleanup', 'Cleanup…', 'Clean up', [
-        {id: 'details', name: 'Show details', group: 'Clean up', enabled: progress, run: on.details},
-        {id: 'movie', name: 'Watch the movie', group: 'Clean up', enabled: progress && !state.reduced, run: on.movie},
+        {id: 'details', name: 'Show details', group: 'Clean up', enabled: state.round, run: on.details},
+        {id: 'movie', name: 'Watch the movie', group: 'Clean up', enabled: state.round && !state.reduced, run: on.movie},
         {id: 'undo-cleanup', name: 'Undo this cleanup', group: 'Clean up', enabled: state.cleanupTrash, run: on.undoCleanup},
         {id: 'empty-cleanup', name: 'Empty these from Trash…', group: 'Clean up', enabled: state.cleanupTrash, run: on.emptyCleanup},
       ]),

@@ -508,7 +508,7 @@ function startFree(cleanup: Cleanup, types: ReadonlySet<string>) {
 
 function openingBeats(film: Film, cleanup: Cleanup, types: ReadonlySet<string>) {
   const free = startFree(cleanup, types)
-  if (types.has('waiting') && free === undefined && !cleanup.done) waitingBeat(film)
+  if (types.has('approved') && free === undefined && !cleanup.done) waitingBeat(film)
   if (!film.started && free !== undefined) startedBeat(film, free)
 }
 
