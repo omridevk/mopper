@@ -190,7 +190,7 @@ impl Record {
     pub fn of_run(&self, run: &str) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|e| e.state == TRASHED && (run.is_empty() || e.run == run))
+            .filter(|e| e.state == TRASHED && (run.is_empty() || of_round(&e.run, run)))
             .map(|e| e.id.clone())
             .collect()
     }
@@ -200,6 +200,18 @@ fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+pub fn of_round(entry_run: &str, run: &str) -> bool {
+    entry_run == run
+        || entry_run
+            .strip_prefix(run)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub fn round_run(run_dir: &Path, decision: u64) -> String {
+    format!("{}-{decision}", run_id(run_dir))
 }
 
 pub fn run_id(run_dir: &Path) -> String {
@@ -534,7 +546,7 @@ fn left_bytes(record: &Record, run: &str) -> (usize, i64) {
     let left: Vec<&Entry> = record
         .entries
         .iter()
-        .filter(|e| e.state == TRASHED && e.run == run)
+        .filter(|e| e.state == TRASHED && of_round(&e.run, run))
         .collect();
     (left.len(), left.iter().map(|e| e.bytes).sum())
 }
@@ -854,7 +866,11 @@ pub fn migrate(home: &str) {
     }
 }
 
-fn ids_for(record: &Record, target: &str) -> Result<(String, Vec<String>), String> {
+fn ids_for(
+    record: &Record,
+    target: &str,
+    decision: Option<u64>,
+) -> Result<(String, Vec<String>), String> {
     if target == "--all" {
         return Ok((String::new(), record.of_run("")));
     }
@@ -862,14 +878,29 @@ fn ids_for(record: &Record, target: &str) -> Result<(String, Vec<String>), Strin
     if !run.is_dir() {
         return Err(format!("no run directory at {target}"));
     }
-    let id = run_id(run);
+    let id = match decision {
+        Some(n) => round_run(run, n),
+        None => run_id(run),
+    };
     let ids = record.of_run(&id);
     Ok((id, ids))
 }
 
-fn job(name: &str, target: Option<String>) -> io::Result<i32> {
+pub fn result_line(name: &str, r: &Report) -> String {
+    let verb = if name == "undo" {
+        "restored"
+    } else {
+        "emptied"
+    };
+    format!(
+        "{verb}: {} items, {} bytes; still in the Trash: {}",
+        r.done, r.done_bytes, r.kept
+    )
+}
+
+fn job(name: &str, target: Option<String>, decision: Option<u64>) -> io::Result<i32> {
     let Some(target) = target.filter(|d| !d.is_empty()) else {
-        eprintln!("usage: disk-clean {name} RUN_DIR | --all");
+        eprintln!("usage: disk-clean {name} RUN_DIR [--decision N] | --all");
         return Ok(2);
     };
     let home = util::home();
@@ -877,7 +908,7 @@ fn job(name: &str, target: Option<String>) -> io::Result<i32> {
         eprintln!("the Trash record is busy (another clean, undo or empty is running)");
         return Ok(4);
     };
-    let (run, ids) = match ids_for(&record, &target) {
+    let (run, ids) = match ids_for(&record, &target, decision) {
         Ok(found) => found,
         Err(e) => {
             eprintln!("{e}");
@@ -888,7 +919,8 @@ fn job(name: &str, target: Option<String>) -> io::Result<i32> {
         eprintln!("nothing disk-clean put in the Trash is still there for {target}");
         return Ok(3);
     }
-    let events = (target != "--all").then(|| clean::Events::append(Path::new(&target)));
+    let dir = (target != "--all").then(|| Path::new(&target));
+    let events = dir.map(clean::Events::append);
     let emit = |event: &str, data: Value| {
         if let Some(events) = &events {
             events.emit(event, data);
@@ -899,6 +931,10 @@ fn job(name: &str, target: Option<String>) -> io::Result<i32> {
     } else {
         empty(&mut record, &ids, &run, &emit)?
     };
+    let line = result_line(name, &r);
+    if let Some(dir) = dir {
+        clean::log_line(dir, &format!("{name} from the terminal: {line}"));
+    }
     let verb = if name == "undo" {
         "restored"
     } else {
@@ -909,12 +945,12 @@ fn job(name: &str, target: Option<String>) -> io::Result<i32> {
     Ok(0)
 }
 
-pub fn run_undo(target: Option<String>) -> io::Result<i32> {
-    job("undo", target)
+pub fn run_undo(target: Option<String>, decision: Option<u64>) -> io::Result<i32> {
+    job("undo", target, decision)
 }
 
-pub fn run_empty(target: Option<String>) -> io::Result<i32> {
-    job("empty", target)
+pub fn run_empty(target: Option<String>, decision: Option<u64>) -> io::Result<i32> {
+    job("empty", target, decision)
 }
 
 pub fn ids_of(payload: &Value) -> Vec<String> {

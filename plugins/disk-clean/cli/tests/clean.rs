@@ -324,7 +324,11 @@ fn a_localized_user_dir_from_user_dirs_dirs_is_protected() {
         .map(|p| selection_item("rm", &text(p)))
         .collect();
     write_run(&run, &scan, &items, None);
-    let out = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        home,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     for p in [&bilder, &inside, &pictures] {
@@ -519,7 +523,11 @@ fn protected_folders_spelled_by_case_or_short_name_are_rejected() {
         .collect();
     let run = home.join("run");
     write_run(&run, &scan, &items, None);
-    let out = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        home,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     for p in &spellings {
@@ -591,12 +599,16 @@ fn clean_end_to_end_on_fixture() {
     ]
     .join(",");
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{items}], "total_bytes": 0}}"#),
     )
     .unwrap();
 
-    let dry = common::cli(&["clean", "--dry-run", &p(&run)], root, &[]);
+    let dry = common::cli(
+        &["clean", "--dry-run", &p(&run), "--decision", "1"],
+        root,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(dry.status.success(), "{plan}");
     let (hold_at, cant_undo) = (
@@ -627,9 +639,9 @@ fn clean_end_to_end_on_fixture() {
     );
     assert!(plan.contains("# 3 items, 12288 bytes"), "{plan}");
     assert!(doomed.exists() && doomed_file.exists());
-    assert!(!run.join("rm-list").exists() && !run.join("status").exists());
+    assert!(!run.join("decisions/1/rm-list").exists() && !run.join("decisions/1/status").exists());
 
-    let out = common::cli(&["clean", &p(&run)], root, &[]);
+    let out = common::cli(&["clean", &p(&run), "--decision", "1"], root, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -647,7 +659,7 @@ fn clean_end_to_end_on_fixture() {
         "{stdout}"
     );
 
-    let rejected = fs::read_to_string(run.join("rejected")).unwrap();
+    let rejected = fs::read_to_string(run.join("decisions/1/rejected")).unwrap();
     assert!(
         rejected.contains(&format!("not in scan\t{}\n", p(&not_in_scan))),
         "{rejected}"
@@ -664,14 +676,17 @@ fn clean_end_to_end_on_fixture() {
         rejected.contains("unknown command id\trm-rf-everything\n"),
         "{rejected}"
     );
-    assert_eq!(fs::read_to_string(run.join("cmd-list")).unwrap(), "");
     assert_eq!(
-        fs::read_to_string(run.join("wt-list")).unwrap(),
+        fs::read_to_string(run.join("decisions/1/cmd-list")).unwrap(),
+        ""
+    );
+    assert_eq!(
+        fs::read_to_string(run.join("decisions/1/wt-list")).unwrap(),
         format!("{}\n", p(&repo))
     );
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    while fs::read_to_string(run.join("status")).unwrap_or_default() != "done\n" {
+    while fs::read_to_string(run.join("decisions/1/status")).unwrap_or_default() != "done\n" {
         assert!(Instant::now() < deadline, "worker never finished");
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -709,7 +724,7 @@ fn clean_end_to_end_on_fixture() {
     for entry in &record {
         assert!(Path::new(&entry.trashed).exists(), "{entry:?}");
         assert_eq!((entry.bytes, entry.state.as_str()), (4096, "trashed"));
-        assert_eq!(entry.run, disk_clean::trash::run_id(&run));
+        assert_eq!(entry.run, disk_clean::trash::round_run(&run, 1));
         assert!(entry.at > 0);
     }
     assert!(
@@ -730,16 +745,20 @@ fn clean_rejects_everything() {
     fs::write(&protected, b"key").unwrap();
     fs::write(run.join("scan.tsv"), "").unwrap();
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{{"path": "{}"}}]}}"#, text(&protected)),
     )
     .unwrap();
-    let out = common::cli(&["clean", &text(&run)], &t.0, &[]);
+    let out = common::cli(&["clean", &text(&run), "--decision", "1"], &t.0, &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing passed validation"));
-    assert!(!run.join("clean.log").exists());
+    let log = fs::read_to_string(run.join("clean.log")).unwrap();
+    assert!(
+        log.contains("decision 1 abandoned: nothing passed"),
+        "{log}"
+    );
     assert_eq!(
-        fs::read_to_string(run.join("status")).unwrap(),
+        fs::read_to_string(run.join("decisions/1/status")).unwrap(),
         "abandoned\n"
     );
     let events = common::events_of(&run);
@@ -769,11 +788,15 @@ fn dry_run_quotes_paths_and_lists_fixed_commands() {
     ]
     .join(",");
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        &t.0,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{plan}");
     let quoted = format!("'{}'", odd_s.replace('\'', r"'\''"));
@@ -801,11 +824,15 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
     )
     .unwrap();
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{}]}}"#, selection_item("worktree", &wt_s)),
     )
     .unwrap();
-    let out = common::cli(&["clean", "--dry-run", &text(&run)], root, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        root,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&out.stdout);
     let repo_s = text(&repo);
     assert!(
@@ -823,7 +850,7 @@ fn dry_run_names_the_owning_repo_of_a_linked_worktree() {
 
 fn wait_done(run: &Path) {
     let deadline = Instant::now() + Duration::from_secs(30);
-    while fs::read_to_string(run.join("status")).unwrap_or_default() != "done\n" {
+    while fs::read_to_string(run.join("decisions/1/status")).unwrap_or_default() != "done\n" {
         assert!(Instant::now() < deadline, "worker never finished");
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -864,11 +891,11 @@ fn worker_writes_one_event_per_outcome() {
     ]
     .join(",");
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{items}]}}"#),
     )
     .unwrap();
-    let out = common::cli(&["clean", &p(&run)], root, &[]);
+    let out = common::cli(&["clean", &p(&run), "--decision", "1"], root, &[]);
     assert!(out.status.success());
     wait_done(&run);
     common::sh(root, "chmod 755 pinned");
@@ -965,14 +992,14 @@ fn write_run(run: &Path, scan: &str, items: &[String], lists: Option<(&str, &str
     fs::create_dir_all(run).unwrap();
     fs::write(run.join("scan.tsv"), scan).unwrap();
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(run),
         format!(r#"{{"items": [{}]}}"#, items.join(",")),
     )
     .unwrap();
     if let Some((rm, wt)) = lists {
-        fs::write(run.join("rm-list"), rm).unwrap();
-        fs::write(run.join("wt-list"), wt).unwrap();
-        fs::write(run.join("cmd-list"), "").unwrap();
+        fs::write(run.join("decisions/1/rm-list"), rm).unwrap();
+        fs::write(run.join("decisions/1/wt-list"), wt).unwrap();
+        fs::write(run.join("decisions/1/cmd-list"), "").unwrap();
     }
 }
 
@@ -992,7 +1019,7 @@ fn an_unusable_home_is_refused() {
     for home in ["", "relative/home", "/nonexistent/disk-clean-home"] {
         let out = common::output(
             Command::new(env!("CARGO_BIN_EXE_disk-clean"))
-                .args(["clean", "--dry-run", &text(&run)])
+                .args(["clean", "--dry-run", &text(&run), "--decision", "1"])
                 .env(home_var, home),
         );
         assert_eq!(out.status.code(), Some(1), "HOME={home:?}");
@@ -1025,7 +1052,11 @@ fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
     fs::rename(&app, home.join("Library/Caches/app-moved")).unwrap();
     std::os::unix::fs::symlink(decoy_t.0.join("app"), &app).unwrap();
 
-    let dry = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let dry = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        home,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(
         plan.contains(&format!(
@@ -1034,7 +1065,7 @@ fn a_symlink_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
         )),
         "{plan}"
     );
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
         + &String::from_utf8_lossy(&out.stdout);
@@ -1075,7 +1106,7 @@ fn a_leaf_symlink_is_moved_itself_never_followed() {
         &[selection_item("rm", &text(&link))],
         Some((&format!("{}\n", text(&link)), "")),
     );
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     assert!(fs::symlink_metadata(&link).is_err(), "the link itself goes");
     assert!(decoy_t.0.join("precious").exists(), "its target stays");
@@ -1116,7 +1147,7 @@ fn a_worktree_swapped_for_another_checkout_keeps_the_decoy() {
     fs::rename(home.join("wts/a"), home.join("wts/a-moved")).unwrap();
     std::os::unix::fs::symlink(decoy_t.0.join("a"), home.join("wts/a")).unwrap();
 
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
         + &String::from_utf8_lossy(&out.stdout);
@@ -1133,8 +1164,17 @@ fn a_worktree_swapped_for_another_checkout_keeps_the_decoy() {
     );
 }
 
+fn add_decision(run: &Path, n: u64, items: &[String]) {
+    fs::create_dir_all(run.join(format!("decisions/{n}"))).unwrap();
+    fs::write(
+        run.join(format!("decisions/{n}.json")),
+        format!(r#"{{"items": [{}]}}"#, items.join(",")),
+    )
+    .unwrap();
+}
+
 #[test]
-fn a_second_run_starts_a_fresh_event_file() {
+fn a_second_round_appends_to_the_one_log_of_record() {
     let t = common::temp_dir("clean-rerun");
     let root = &t.0;
     let (a, b) = (root.join("a"), root.join("b"));
@@ -1144,35 +1184,140 @@ fn a_second_run_starts_a_fresh_event_file() {
     }
     let run = root.join("run");
     let scan = scan_row("caches", "rm", &text(&a)) + &scan_row("caches", "rm", &text(&b));
-    let items = [
-        selection_item("rm", &text(&a)),
-        selection_item("rm", &text(&b)),
-    ];
-    write_run(&run, &scan, &items, Some((&format!("{}\n", text(&a)), "")));
+    write_run(&run, &scan, &[selection_item("rm", &text(&a))], None);
+    add_decision(&run, 2, &[selection_item("rm", &text(&b))]);
+    for n in ["1", "2"] {
+        let out = common::cli(&["clean", &text(&run), "--decision", n], root, &[]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        common::wait_for("the round", Duration::from_secs(20), || {
+            fs::read_to_string(run.join(format!("decisions/{n}/status")))
+                .is_ok_and(|s| s == "done\n")
+        });
+    }
+    let events = common::events_of(&run);
+    let started: Vec<&serde_json::Value> =
+        events.iter().filter(|e| e["event"] == "started").collect();
+    assert_eq!(started.len(), 2, "{events:?}");
+    assert_eq!(started[0]["decision"], 1);
+    assert_eq!(started[1]["decision"], 2);
+    assert_ne!(started[0]["run"], started[1]["run"]);
+    let trashed: Vec<(u64, String)> = events
+        .iter()
+        .filter(|e| e["event"] == "trashed")
+        .map(|e| {
+            (
+                e["decision"].as_u64().unwrap(),
+                e["path"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(trashed, [(1, text(&a)), (2, text(&b))]);
+    assert_eq!(events.iter().filter(|e| e["event"] == "done").count(), 2);
+    let log = fs::read_to_string(run.join("clean.log")).unwrap();
     assert!(
-        common::cli(&["clean", "--worker", &text(&run)], root, &[])
-            .status
-            .success()
+        log.contains("decision 1 finished") && log.contains("decision 2 finished"),
+        "{log}"
     );
-    let first = common::events_of(&run);
-    let first_run = first[0]["run"].as_str().unwrap().to_string();
-    assert!(!first_run.is_empty());
+    let rounds: Vec<String> = disk_clean::trash::read(&text(root))
+        .into_iter()
+        .map(|e| e.run)
+        .collect();
+    let id = disk_clean::trash::run_id(&run);
+    assert_eq!(rounds, [format!("{id}-1"), format!("{id}-2")]);
+    let same = common::cli(&["clean", &text(&run), "--decision", "1"], root, &[]);
+    assert_eq!(same.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&same.stdout).contains("decision 1 already ran (done)"),
+        "{}",
+        String::from_utf8_lossy(&same.stdout)
+    );
+    let missing = common::cli(&["clean", &text(&run), "--decision", "3"], root, &[]);
+    assert_eq!(missing.status.code(), Some(2));
+    let unnumbered = common::cli(&["clean", &text(&run)], root, &[]);
+    assert_eq!(unnumbered.status.code(), Some(2));
+}
 
-    fs::write(run.join("rm-list"), format!("{}\n", text(&b))).unwrap();
+#[test]
+fn two_approvals_queue_and_run_in_order() {
+    let t = common::temp_dir("clean-queue");
+    let root = &t.0;
+    let (a, b) = (root.join("a"), root.join("b"));
+    for dir in [&a, &b] {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("f"), b"x").unwrap();
+    }
+    let run = root.join("run");
+    let scan = scan_row("caches", "rm", &text(&a)) + &scan_row("caches", "rm", &text(&b));
+    write_run(&run, &scan, &[selection_item("rm", &text(&a))], None);
+    add_decision(&run, 2, &[selection_item("rm", &text(&b))]);
+    let busy = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(run.join("clean.lock"))
+        .unwrap();
+    busy.try_lock().unwrap();
+    for n in ["2", "1"] {
+        let out = common::cli(&["clean", &text(&run), "--decision", n], root, &[]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "queued, never an error: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("waits   : for the cleanup before it"),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(
+            fs::read_to_string(run.join(format!("decisions/{n}/status"))).unwrap(),
+            "queued\n"
+        );
+    }
+    common::wait_for("both queued events", Duration::from_secs(10), || {
+        common::events_of(&run)
+            .iter()
+            .filter(|e| e["event"] == "queued")
+            .count()
+            == 2
+    });
+    let again = common::cli(&["clean", &text(&run), "--decision", "2"], root, &[]);
     assert!(
-        common::cli(&["clean", "--worker", &text(&run)], root, &[])
-            .status
-            .success()
+        String::from_utf8_lossy(&again.stdout).contains("decision 2 is already queued or running")
     );
-    let second = common::events_of(&run);
-    let started: Vec<_> = second.iter().filter(|e| e["event"] == "started").collect();
-    assert_eq!(started.len(), 1, "{second:?}");
-    assert_ne!(started[0]["run"], first_run.as_str());
     assert!(
-        second.iter().all(|e| e["path"] != text(&a).as_str()),
-        "{second:?}"
+        a.exists() && b.exists(),
+        "nothing runs while another cleanup holds the run"
     );
-    assert_eq!(second.iter().filter(|e| e["event"] == "done").count(), 1);
+    drop(busy);
+    common::wait_for("both rounds", Duration::from_secs(30), || {
+        ["1", "2"].iter().all(|n| {
+            fs::read_to_string(run.join(format!("decisions/{n}/status")))
+                .is_ok_and(|s| s == "done\n")
+        })
+    });
+    let order: Vec<(String, u64)> = common::events_of(&run)
+        .iter()
+        .filter(|e| e["event"] == "started" || e["event"] == "done")
+        .map(|e| {
+            (
+                e["event"].as_str().unwrap().to_string(),
+                e["decision"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, u64)> = [("started", 1), ("done", 1), ("started", 2), ("done", 2)]
+        .iter()
+        .map(|(e, n)| (e.to_string(), *n))
+        .collect();
+    assert_eq!(order, expected);
+    assert!(!a.exists() && !b.exists());
+    common::assert_record_inside_ram_disk(root);
 }
 
 #[test]
@@ -1192,7 +1337,11 @@ fn duplicate_selection_paths_are_planned_once() {
         ],
         None,
     );
-    let out = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        &t.0,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         plan.matches(&format!("trash -- {}\n", text(&dir))).count(),
@@ -1223,7 +1372,11 @@ fn duplicate_selection_paths_are_planned_once() {
 fn dry_run_exit_codes_match_the_real_run() {
     let t = common::temp_dir("clean-codes");
     let missing = t.0.join("no-such-run");
-    let out = common::cli(&["clean", "--dry-run", &text(&missing)], &t.0, &[]);
+    let out = common::cli(
+        &["clean", "--dry-run", &text(&missing), "--decision", "1"],
+        &t.0,
+        &[],
+    );
     assert_eq!(out.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("no run directory at"),
@@ -1235,9 +1388,13 @@ fn dry_run_exit_codes_match_the_real_run() {
     fs::create_dir_all(t.0.join(".ssh")).unwrap();
     fs::write(&protected, b"key").unwrap();
     write_run(&run, "", &[selection_item("rm", &text(&protected))], None);
-    let dry = common::cli(&["clean", "--dry-run", &text(&run)], &t.0, &[]);
+    let dry = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        &t.0,
+        &[],
+    );
     assert_eq!(dry.status.code(), Some(3));
-    let real = common::cli(&["clean", &text(&run)], &t.0, &[]);
+    let real = common::cli(&["clean", &text(&run), "--decision", "1"], &t.0, &[]);
     assert_eq!(real.status.code(), Some(3));
 }
 
@@ -1269,7 +1426,7 @@ fn planning_ten_thousand_items_takes_well_under_a_second() {
 
 #[cfg(unix)]
 #[test]
-fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
+fn a_decision_runs_once_and_a_killed_worker_reads_as_interrupted() {
     let t = common::temp_dir("clean-lock");
     let root = &t.0;
     let (run, bin, gate, ran) = (
@@ -1297,7 +1454,7 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
     );
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let env = [("PATH", path.as_str())];
-    let first = common::cli(&["clean", &text(&run)], root, &env);
+    let first = common::cli(&["clean", &text(&run), "--decision", "1"], root, &env);
     assert!(
         first.status.success(),
         "{}",
@@ -1307,36 +1464,32 @@ fn one_clean_per_run_dir_and_a_killed_worker_reads_as_interrupted() {
         ran.exists()
     });
 
-    let second = common::cli(&["clean", &text(&run)], root, &env);
-    assert_eq!(second.status.code(), Some(4));
+    let second = common::cli(&["clean", &text(&run), "--decision", "1"], root, &env);
+    assert_eq!(second.status.code(), Some(0));
     assert!(
-        String::from_utf8_lossy(&second.stderr).contains("already running"),
+        String::from_utf8_lossy(&second.stdout).contains("decision 1 is already queued or running"),
         "{}",
-        String::from_utf8_lossy(&second.stderr)
+        String::from_utf8_lossy(&second.stdout)
     );
 
-    let pid = fs::read_to_string(run.join("worker.pid")).unwrap();
+    let pid = fs::read_to_string(run.join("decisions/1/worker.pid")).unwrap();
     assert!(common::status(Command::new("kill").args(["-9", pid.trim()])).success());
-    let port = common::free_port();
-    let mut watcher = common::spawn(
-        common::bin(root)
-            .args(["watch", &text(&run)])
-            .env("DISK_CLEAN_WATCH_TOKEN", "tok")
-            .env("DISK_CLEAN_WATCH_PORT", port.to_string()),
+    common::wait_for(
+        "the killed worker to let go",
+        Duration::from_secs(10),
+        || disk_clean::clean::run_status(&run, 1) == "interrupted",
     );
-    common::wait_for("the watcher to exit", Duration::from_secs(10), || {
-        watcher.try_wait().unwrap().is_some()
-    });
     fs::write(&gate, "").unwrap();
     common::wait_for("the fake docker to exit", Duration::from_secs(10), || {
         !ran.exists()
     });
     assert_eq!(
-        fs::read_to_string(run.join("status")).unwrap(),
+        fs::read_to_string(run.join("decisions/1/status")).unwrap(),
         "interrupted\n"
     );
     let last = common::events_of(&run).pop().unwrap();
     assert_eq!(last["event"], "abandoned", "{last}");
+    assert_eq!(last["decision"], 1, "{last}");
 }
 
 #[cfg(windows)]
@@ -1381,12 +1534,16 @@ fn clean_end_to_end_on_fixture_on_windows() {
     ]
     .join(",");
     fs::write(
-        run.join("selection.json"),
+        common::decision_file(&run),
         format!(r#"{{"items": [{items}], "total_bytes": 0}}"#),
     )
     .unwrap();
 
-    let dry = common::cli(&["clean", "--dry-run", &p(&run)], root, &[]);
+    let dry = common::cli(
+        &["clean", "--dry-run", &p(&run), "--decision", "1"],
+        root,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(dry.status.success(), "{plan}");
     assert!(
@@ -1403,7 +1560,7 @@ fn clean_end_to_end_on_fixture_on_windows() {
     );
     assert!(plan.contains("# 3 items, 12288 bytes"), "{plan}");
 
-    let out = common::cli(&["clean", &p(&run)], root, &[]);
+    let out = common::cli(&["clean", &p(&run), "--decision", "1"], root, &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -1469,7 +1626,11 @@ fn a_junction_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
     fs::rename(&app, home.join("AppData/Local/app-moved")).unwrap();
     common::junction(&app, &decoy_t.0.join("app"));
 
-    let dry = common::cli(&["clean", "--dry-run", &text(&run)], home, &[]);
+    let dry = common::cli(
+        &["clean", "--dry-run", &text(&run), "--decision", "1"],
+        home,
+        &[],
+    );
     let plan = String::from_utf8_lossy(&dry.stdout);
     assert!(
         plan.contains(&format!(
@@ -1478,7 +1639,7 @@ fn a_junction_swapped_into_a_parent_after_the_scan_keeps_the_decoy() {
         )),
         "{plan}"
     );
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
         + &String::from_utf8_lossy(&out.stdout);
@@ -1513,7 +1674,7 @@ fn a_leaf_junction_is_moved_itself_and_its_target_stays() {
         &[selection_item("rm", &text(&link))],
         Some((&format!("{}\n", text(&link)), "")),
     );
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     assert!(
         fs::symlink_metadata(&link).is_err(),
@@ -1557,7 +1718,7 @@ fn a_worktree_swapped_for_a_junction_to_another_checkout_keeps_the_decoy() {
     fs::rename(home.join("wts/a"), home.join("wts/a-moved")).unwrap();
     common::junction(&home.join("wts/a"), &decoy_t.0.join("a"));
 
-    let out = common::cli(&["clean", "--worker", &text(&run)], home, &[]);
+    let out = common::cli(&["clean", "--worker", &text(&run), "1"], home, &[]);
     assert!(out.status.success());
     let log = fs::read_to_string(run.join("clean.log")).unwrap_or_default()
         + &String::from_utf8_lossy(&out.stdout);

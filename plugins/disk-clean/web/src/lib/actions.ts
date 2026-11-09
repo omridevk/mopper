@@ -1,6 +1,6 @@
 import {createOptimisticAction} from '@tanstack/db'
 import {decide, messageOf, rescan as requestRescan, httpStatusOf, trashAction, type Mode, type Selected} from './api'
-import {openCleanup, openScan, receiveTrash, writeSession, type Action, type Db, type Planned, type Request} from './db'
+import {beginRound, openScan, receiveTrash, writeSession, type Action, type Db, type Planned, type Request} from './db'
 import {RESTART, type Entry} from './scan-feed'
 
 const plannedOf = ({path, label, bytes, section, exact}: Entry): Planned => ({path, label, bytes, section, exact})
@@ -44,48 +44,25 @@ function tracked(db: Db, action: Action, apply: () => void, send: () => Promise<
     )
 }
 
-function stopScan(db: Db) {
-  const scan = db.scan.scan.synced.get('scan')
-  if (!scan || scan.done || scan.error !== '') return false
-  db.streams.scan?.()
-  db.streams.scan = null
-  db.scan.scan.collection.update('scan', draft => {
-    draft.stopped = true
-  })
-  return true
-}
-
 interface Approval {
   items: readonly Entry[]
-  bytes: number
   selected: Selected
   mode: Mode
 }
 
-export function approve(db: Db, {items, bytes: approvedBytes, selected, mode}: Approval) {
-  const rows = items.map(plannedOf)
-  const stopped = {scan: false}
-  const apply = () => {
-    db.plan.collection.insert(rows)
-    db.session.collection.update('session', draft => {
-      draft.approved = true
-      draft.approvedBytes = approvedBytes
-    })
-    stopped.scan = stopScan(db)
-  }
-  return tracked(db, 'approve', apply, async () => {
-    try {
-      await decide(db.loaded.token, 'approve', selected, mode)
-    } catch (e) {
-      if (stopped.scan) openScan(db)
-      throw e
-    }
-    const scan = db.scan.scan.synced.get('scan')
-    if (stopped.scan && scan) db.scan.scan.write(writes => writes.put({...scan, stopped: true}))
-    db.plan.write(writes => rows.forEach(writes.put))
-    writeSession(db, {approved: true, approvedBytes})
-    openCleanup(db)
-  })
+const decisionIn = (answer: unknown) =>
+  typeof answer === 'object' && answer !== null && 'decision' in answer && typeof answer.decision === 'number' ? answer.decision : null
+
+export function approve(db: Db, {items, selected, mode}: Approval) {
+  return tracked(
+    db,
+    'approve',
+    () => {},
+    async () => {
+      const decision = decisionIn(await decide(db.loaded.token, 'approve', selected, mode))
+      if (decision === null || decision !== db.cleanup.decision) beginRound(db, {decision: decision ?? 0, items: items.map(plannedOf), trash_run: ''})
+    },
+  )
 }
 
 export function cancel(db: Db) {

@@ -1,10 +1,11 @@
 import {createFileRoute, redirect} from '@tanstack/react-router'
 import {EmptyDialog} from '@/components/empty-dialog'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {isApproved, useDecisions, useProgress} from '@/lib/page-data'
+import {cleanupReady, isApproved, useDecisions, useProgress} from '@/lib/page-data'
 
 export const Route = createFileRoute('/_tabs/cleanup/$section/empty')({
-  beforeLoad: ({context, params}) => {
+  beforeLoad: async ({context, params}) => {
+    await cleanupReady(context.db)
     if (!isApproved(context.db)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
   },
   component: Empty,

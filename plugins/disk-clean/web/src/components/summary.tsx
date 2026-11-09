@@ -66,7 +66,7 @@ function diskFigures(data: Disk, selection: Selection, progress: CleanupProgress
   return {used: Math.max(0, data.total - free), pending, before: beforeOf(progress, data.free), after: free, free}
 }
 
-const KEEPS_SPACE = new Set<Phase>(['waiting', 'trashing', 'trashed', 'undoing'])
+const KEEPS_SPACE = new Set<Phase>(['waiting', 'queued', 'trashing', 'trashed', 'undoing'])
 const FREES_SPACE = new Set<Phase>(['deleting', 'emptying'])
 
 function Bold({bytes}: {bytes: number}) {

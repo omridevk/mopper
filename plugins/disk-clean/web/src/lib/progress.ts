@@ -22,6 +22,7 @@ export interface Job {
 
 export interface Cleanup {
   waiting: boolean
+  queued: boolean
   started: Of<'started'> | null
   done: Of<'done'> | null
   free: Of<'free'> | null
@@ -52,6 +53,7 @@ export interface Removal {
 }
 
 export interface CleanupProgress {
+  active: boolean
   plan: FilmPlan
   cleanup: Cleanup
   outcomes: readonly Outcome[]
@@ -77,7 +79,7 @@ interface Total {
   count: number
 }
 
-const NO_CLEANUP: Cleanup = {waiting: false, started: null, done: null, free: null, abandoned: null, job: null, latestFree: null}
+const NO_CLEANUP: Cleanup = {waiting: false, queued: false, started: null, done: null, free: null, abandoned: null, job: null, latestFree: null}
 
 function startedJob(event: Extract<CleanupEvent, {type: 'empty_started' | 'undo_started'}>): Job {
   const {job, count, bytes} = event.data
@@ -109,8 +111,10 @@ function withLatestFree(cleanup: Cleanup, event: CleanupEvent): Cleanup {
 
 function withStatusOnly(cleanup: Cleanup, event: CleanupEvent): Cleanup {
   switch (event.type) {
-    case 'waiting':
+    case 'approved':
       return {...cleanup, waiting: true}
+    case 'queued':
+      return {...cleanup, queued: true}
     case 'started':
       return {...cleanup, started: event.data}
     case 'done':
@@ -231,7 +235,7 @@ function inTrashOf(entries: readonly TrashEntry[], run: string): InTrash {
 
 function useInTrash(db: Db) {
   const {data} = useLiveQuery(db.trash.collection)
-  const run = db.loaded.run ?? ''
+  const run = useSession(db).trashRun || (db.loaded.run ?? '')
   return useMemo(() => inTrashOf(data, run), [data, run])
 }
 
@@ -247,6 +251,7 @@ export function useCleanupProgress(db: Db): CleanupProgress | null {
     if (!session.approved) return null
     const {done} = cleanup
     return {
+      active: session.active,
       plan,
       cleanup,
       outcomes,
@@ -254,7 +259,7 @@ export function useCleanupProgress(db: Db): CleanupProgress | null {
       ...figures,
       inTrash,
       total: totalOf(plan, cleanup),
-      free: freeNow(cleanup),
+      free: session.freshDisk ? null : freeNow(cleanup),
       freeChange: done ? done.free_after - done.free_before : null,
       link: session.cleanupLink,
     }
@@ -265,14 +270,14 @@ export function jobRunning(progress: CleanupProgress) {
   return progress.cleanup.job !== null && progress.cleanup.job.done === null
 }
 
-export type Phase = 'scanning' | 'reviewing' | 'waiting' | 'trashing' | 'deleting' | 'trashed' | 'undoing' | 'emptying' | 'finished' | 'stopped'
+export type Phase = 'scanning' | 'reviewing' | 'waiting' | 'queued' | 'trashing' | 'deleting' | 'trashed' | 'undoing' | 'emptying' | 'finished' | 'stopped'
 
 export function phaseOf(scanning: boolean, progress: CleanupProgress | null): Phase {
   if (!progress) return scanning ? 'scanning' : 'reviewing'
   const {job, abandoned, started, done} = progress.cleanup
   if (job && !job.done) return job.kind === 'empty' ? 'emptying' : 'undoing'
   if (abandoned) return 'stopped'
-  if (!started) return 'waiting'
+  if (!started) return progress.cleanup.queued ? 'queued' : 'waiting'
   if (!done) return (started.trash ?? 0) > 0 ? 'trashing' : 'deleting'
   return progress.inTrash.count > 0 ? 'trashed' : 'finished'
 }

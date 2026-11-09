@@ -3,7 +3,7 @@ import {describe, expect, test} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
-import {at, bigSection, withSection} from './test/fixture'
+import {approvedEvent, at, bigSection, withSection} from './test/fixture'
 import './index.css'
 
 const SMALL = 30
@@ -148,9 +148,11 @@ async function cleanup(events: number): Promise<Work> {
   const loaded = withSection(bigSection(events))
   const paths = loaded.data.categories.flatMap(c => c.items.filter(i => i.path.includes('/tmp/')).map(i => i.path))
   const source = cleanupSource()
-  const screen = await render(<Measured loaded={{...loaded, approved: paths, openEvents: () => source}} />)
+  const screen = await render(<Measured loaded={{...loaded, openEvents: () => source}} />)
   await screen.getByRole('link', {name: /^Your macOS temp/}).click()
   await expect.element(screen.getByRole('heading', {name: 'Your macOS temp'})).toBeVisible()
+  const approved = approvedEvent(paths, 1, loaded.data.categories)
+  send(source, approved.type, approved.data)
   send(source, 'started', {run: 'run-1', free: 1, paths: paths.length, worktrees: 0, commands: 0, bytes: paths.length * 4096, elapsed_ms: 0})
   await screen.getByRole('button', {name: 'Details'}).click()
   const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})

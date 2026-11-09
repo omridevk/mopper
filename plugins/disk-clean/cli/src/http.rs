@@ -263,10 +263,12 @@ pub fn constant_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub const POST_ROUTES: [&str; 5] = ["/decide", "/preview", "/rescan", "/undo", "/empty"];
+pub const POST_ROUTES: [&str; 6] = ["/decide", "/preview", "/rescan", "/undo", "/empty", "/stop"];
+
+pub const STREAMS: [&str; 2] = ["/events", "/clean-events"];
 
 pub fn is_page_route(route: &str) -> bool {
-    route.starts_with('/') && route != "/events" && !POST_ROUTES.contains(&route)
+    route.starts_with('/') && !STREAMS.contains(&route) && !POST_ROUTES.contains(&route)
 }
 
 pub fn query_token(target: &str) -> &str {

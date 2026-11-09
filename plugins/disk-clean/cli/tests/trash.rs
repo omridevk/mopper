@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
 
-const TOKEN: &str = "tok-trash";
-
 fn scan_row(cat: &str, action: &str, path: &str, bytes: i64) -> String {
     format!("{cat}\tTitle\tDesc\tsafe\t1\t{action}\t-\t{path}\t{path}\t{bytes}\tnote\t1\texact\n")
 }
@@ -57,7 +55,7 @@ fn approve_with(s: &Sandbox, rows: &[(&str, &Path, i64)], mode: &str) {
         .collect();
     fs::write(s.run.join("scan.tsv"), scan).unwrap();
     fs::write(
-        s.run.join("selection.json"),
+        common::decision_file(&s.run),
         format!(r#"{{"items": [{}], "mode": "{mode}"}}"#, items.join(",")),
     )
     .unwrap();
@@ -74,8 +72,8 @@ fn cli(s: &Sandbox, args: &[&str]) -> Output {
 }
 
 fn clean(s: &Sandbox) {
-    let _ = fs::remove_file(s.run.join("status"));
-    let out = cli(s, &["clean", &text(&s.run)]);
+    let _ = fs::remove_file(s.run.join("decisions/1/status"));
+    let out = cli(s, &["clean", &text(&s.run), "--decision", "1"]);
     assert!(
         out.status.success(),
         "{}{}",
@@ -83,7 +81,7 @@ fn clean(s: &Sandbox) {
         String::from_utf8_lossy(&out.stderr)
     );
     common::wait_for("the worker", Duration::from_secs(30), || {
-        fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n"
+        fs::read_to_string(s.run.join("decisions/1/status")).unwrap_or_default() == "done\n"
     });
     common::assert_record_inside_ram_disk(&s.home);
     let log = fs::read_to_string(s.run.join("clean.log")).unwrap_or_default();
@@ -253,7 +251,10 @@ fn sync_notices_put_back_emptied_and_replaced_items_and_never_acts() {
     fs::remove_dir_all(&decoy).unwrap();
     make(Path::new(&decoy), 1);
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     assert!(out.status.code().is_some());
     assert_eq!(at("/put").state, "put-back");
     assert_eq!(at("/gone").state, "emptied");
@@ -305,7 +306,10 @@ fn delete_immediately_removes_and_is_never_recorded() {
     let a = s.home.join("Library/Caches/a");
     make(&a.join("deep"), 100);
     approve_with(&s, &[("rm", &a, 4096)], "now");
-    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    let dry = stdout(&cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    ));
     assert!(
         dry.contains(&format!(
             "# deleted immediately, skipping the Trash (can't be undone):\nrm -rf -- {}\n",
@@ -331,7 +335,10 @@ fn items_already_in_the_trash_are_removed_for_good_not_trashed_again() {
     let old = s.home.join(".Trash/old");
     make(&old, 10);
     approve(&s, &[("rm", &old, 4096)]);
-    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    let dry = stdout(&cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    ));
     assert!(
         dry.contains(&format!("rm -rf -- {}\n", text(&old))),
         "{dry}"
@@ -371,7 +378,10 @@ fn migration_moves_held_runs_into_the_trash_and_drops_the_holding_folder() {
     fs::create_dir_all(b.parent().unwrap()).unwrap();
     let dir = legacy_run(&s, &[&a, &b]);
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("disk-clean: moved 2 held items from the old holding folder to the Trash"),
@@ -420,7 +430,10 @@ fn a_held_item_the_trash_refuses_stays_held_and_moves_on_a_later_run() {
     let ino_before = ino(&read_only);
     fs::set_permissions(&read_only, fs::Permissions::from_mode(0o500)).unwrap();
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("moved 1 held items"), "{err}");
     assert!(err.contains("1 stay in"), "{err}");
@@ -433,7 +446,10 @@ fn a_held_item_the_trash_refuses_stays_held_and_moves_on_a_later_run() {
     assert_eq!(trashed_entries(&s).len(), 1);
 
     fs::set_permissions(&read_only, fs::Permissions::from_mode(0o700)).unwrap();
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("moved 1 held items"), "{err}");
     assert!(!dir.exists());
@@ -455,7 +471,10 @@ fn a_held_item_left_under_its_readable_name_is_still_found_and_moved() {
     fs::rename(dir.join("1"), dir.join("a")).unwrap();
     fs::write(dir.join("stray"), b"not in the manifest").unwrap();
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("moved 1 held items"), "{err}");
     assert_eq!(trashed_entries(&s)[0].original, text(&a));
@@ -528,11 +547,10 @@ fn undo_and_empty_wait_while_the_record_is_busy() {
     let held = trash::Record::open(&text(&s.home), 1).unwrap().unwrap();
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(4));
     assert_eq!(cli(&s, &["empty", &text(&s.run)]).status.code(), Some(4));
-    let port = common::free_port();
-    let _child = watcher(&s, port);
+    let (_child, port, token) = session(&s);
     let own = own_headers(port);
     let id = record(&s)[0].id.clone();
-    let body = format!(r#"{{"token": "{TOKEN}", "ids": ["{id}"]}}"#);
+    let body = format!(r#"{{"token": "{token}", "ids": ["{id}"]}}"#);
     assert_eq!(post(port, "/undo", &own, &body), 409);
     drop(held);
     assert_eq!(post(port, "/undo", &own, &body), 200);
@@ -552,35 +570,53 @@ fn the_worker_holds_the_record_so_an_undo_cannot_race_it() {
     }
     let rows: Vec<(&str, &Path, i64)> = paths.iter().map(|p| ("rm", p.as_path(), 1)).collect();
     approve(&s, &rows);
-    let out = cli(&s, &["clean", &text(&s.run)]);
+    let out = cli(&s, &["clean", &text(&s.run), "--decision", "1"]);
     assert!(out.status.success());
     common::wait_for("the first trash batch", Duration::from_secs(30), || {
         !named(&s.run, "trash").is_empty()
     });
     let busy = trash::Record::open(&text(&s.home), 1).unwrap();
-    let done = fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n";
+    let done = fs::read_to_string(s.run.join("decisions/1/status")).unwrap_or_default() == "done\n";
     assert!(
         busy.is_none() || done,
         "the record is free while the worker still moves items"
     );
     drop(busy);
     common::wait_for("the worker", Duration::from_secs(60), || {
-        fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n"
+        fs::read_to_string(s.run.join("decisions/1/status")).unwrap_or_default() == "done\n"
     });
     assert_eq!(record(&s).len(), 150);
     assert_eq!(cli(&s, &["undo", &text(&s.run)]).status.code(), Some(0));
     assert!(paths.iter().all(|p| p.join("data").exists()));
 }
 
-fn watcher(s: &Sandbox, port: u16) -> common::Reaped {
-    common::reaped(
+fn session(s: &Sandbox) -> (common::Reaped, u16, String) {
+    let mut child = common::reaped(
         common::bin(&s.home)
-            .args(["watch", &text(&s.run)])
-            .env("DISK_CLEAN_WATCH_TOKEN", TOKEN)
-            .env("DISK_CLEAN_WATCH_PORT", port.to_string())
+            .args(["review", &text(&s.run)])
+            .env("DISK_CLEAN_NO_BROWSER", "1")
             .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    )
+            .stderr(Stdio::piped()),
+    );
+    let mut err = std::io::BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut err, &mut line).unwrap();
+    let port: u16 = line
+        .trim()
+        .trim_end_matches('/')
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    std::thread::spawn(move || std::io::copy(&mut err, &mut std::io::sink()));
+    let page = get(port, "/");
+    let token = page
+        .split_once(r#"<meta name="disk-clean-token" content=""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(token, _)| token.to_string())
+        .unwrap();
+    (child, port, token)
 }
 
 fn own_headers(port: u16) -> String {
@@ -628,12 +664,11 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     approve(&s, &[("rm", &a, 4096), ("rm", &b, 4096)]);
     clean(&s);
     let ids: Vec<String> = record(&s).into_iter().map(|e| e.id).collect();
-    let port = common::free_port();
-    let _child = watcher(&s, port);
+    let (_child, port, token) = session(&s);
     let own = own_headers(port);
     let body = |id: &str| {
         format!(
-            r#"{{"token": "{TOKEN}", "ids": ["{id}"], "paths": ["{}"]}}"#,
+            r#"{{"token": "{token}", "ids": ["{id}"], "paths": ["{}"]}}"#,
             text(&outsider)
         )
     };
@@ -662,7 +697,7 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
         ),
         (own.clone(), r#"{"token": "wrong", "ids": []}"#.to_string()),
         (own.clone(), "not json".to_string()),
-        (own.clone(), format!(r#"{{"token": "{TOKEN}"}}"#)),
+        (own.clone(), format!(r#"{{"token": "{token}"}}"#)),
     ];
     for route in ["/undo", "/empty"] {
         for (headers, body) in &refused {
@@ -675,7 +710,7 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     }
     assert_eq!(
         post(port, "/free", &own, &body(&ids[0])),
-        405,
+        404,
         "free is gone"
     );
     assert_eq!(
@@ -703,6 +738,29 @@ fn undo_and_empty_routes_need_token_origin_and_host_and_stay_in_the_record() {
     );
     let rows = named(&s.run, "trash");
     assert!(rows.iter().any(|r| r["entries"][0]["state"] == "emptied"));
+    let log = fs::read_to_string(s.run.join("clean.log")).unwrap();
+    assert!(
+        log.contains("page: undo from the page: restored: 1 items, 100 bytes")
+            || log.contains("page: undo from the page: restored: 1 items, 4096 bytes"),
+        "the page's Undo is in the log of record: {log}"
+    );
+    assert!(
+        log.contains("page: empty from the page: emptied: 1 items"),
+        "{log}"
+    );
+    let woke: Vec<String> = (0..3)
+        .map(|_| {
+            let out = cli(&s, &["wait", &text(&s.run)]);
+            assert_eq!(out.status.code(), Some(0));
+            stdout(&out)
+        })
+        .collect();
+    assert!(woke[0].starts_with("decision 1 "), "{woke:?}");
+    assert!(
+        woke[1].starts_with("page: undo from the page: restored: 1 items"),
+        "{woke:?}"
+    );
+    assert!(woke[2].starts_with("page: empty from the page"), "{woke:?}");
 }
 
 #[test]
@@ -715,8 +773,7 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
     let entry = record(&s).remove(0);
     assert_eq!(entry.state, "trashed", "{entry:?}");
     fs::rename(&entry.trashed, &a).unwrap();
-    let port = common::free_port();
-    let _child = watcher(&s, port);
+    let (_child, port, _) = session(&s);
     let page = get(port, "/trash");
     assert!(page.contains(" 200 OK"), "{page}");
     assert!(
@@ -724,8 +781,6 @@ fn a_page_load_syncs_the_record_and_tells_the_page() {
         "the page gets the synced record"
     );
     assert!(page.contains(&format!(r#""run":"{}""#, trash::run_id(&s.run))));
-    let told = named(&s.run, "trash");
-    assert_eq!(told.last().unwrap()["entries"][0]["state"], "put-back");
     assert_eq!(record(&s)[0].state, "put-back");
 }
 
@@ -898,7 +953,10 @@ fn items_already_in_the_trash_are_removed_for_good_not_trashed_again_on_linux() 
     )
     .unwrap();
     approve(&s, &[("rm", &old, 4096)]);
-    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    let dry = stdout(&cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    ));
     assert!(
         dry.contains(&format!("rm -rf -- {}\n", text(&old))),
         "{dry}"
@@ -1084,7 +1142,10 @@ fn a_file_manager_restore_or_empty_is_picked_up_by_sync() {
     fs::remove_dir_all(&gone_trashed).unwrap();
     fs::remove_file(info_of(&gone_trashed)).unwrap();
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     assert!(out.status.code().is_some());
     assert_eq!(at("/put").state, "put-back");
     assert_eq!(at("/gone").state, "emptied");
@@ -1170,8 +1231,8 @@ fn bin_entries(bin: &Path) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 fn clean_and_wait(s: &Sandbox) -> String {
-    let _ = fs::remove_file(s.run.join("status"));
-    let out = cli(s, &["clean", &text(&s.run)]);
+    let _ = fs::remove_file(s.run.join("decisions/1/status"));
+    let out = cli(s, &["clean", &text(&s.run), "--decision", "1"]);
     assert!(
         out.status.success(),
         "{}{}",
@@ -1179,7 +1240,7 @@ fn clean_and_wait(s: &Sandbox) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     common::wait_for("the worker", Duration::from_secs(60), || {
-        fs::read_to_string(s.run.join("status")).unwrap_or_default() == "done\n"
+        fs::read_to_string(s.run.join("decisions/1/status")).unwrap_or_default() == "done\n"
     });
     common::assert_record_inside_ram_disk(&s.home);
     fs::read_to_string(s.run.join("clean.log")).unwrap_or_default()
@@ -1227,7 +1288,10 @@ fn items_already_in_the_recycle_bin_are_removed_for_good_not_trashed_again() {
     let info = info_of_recycled(&old);
     assert!(info.is_file());
     approve(&s, &[("rm", &old, 4096)]);
-    let dry = stdout(&cli(&s, &["clean", "--dry-run", &text(&s.run)]));
+    let dry = stdout(&cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    ));
     assert!(
         dry.contains(&format!("rm -rf -- '{}'\n", text(&old))),
         "{dry}"
@@ -1386,7 +1450,7 @@ fn categories_of(rows: &str, path: &Path) -> Vec<String> {
 fn select(s: &Sandbox, paths: &[&Path]) {
     let items: Vec<String> = paths.iter().map(|p| item("rm", &text(p), 4096)).collect();
     fs::write(
-        s.run.join("selection.json"),
+        common::decision_file(&s.run),
         format!(r#"{{"items": [{}], "mode": "trash"}}"#, items.join(",")),
     )
     .unwrap();
@@ -1420,7 +1484,7 @@ fn a_project_folder_on_another_drive_goes_to_that_drives_recycle_bin_and_comes_b
 
     select(&s, &[&node_modules, &notes, &theirs]);
     let log = clean_and_wait(&s);
-    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    let rejected = fs::read_to_string(s.run.join("decisions/1/rejected")).unwrap();
     for p in [&notes, &theirs] {
         assert!(
             rejected.contains(&format!("not in scan\t{}\n", text(p))),
@@ -1493,14 +1557,14 @@ fn a_drive_root_and_never_walked_folders_on_another_drive_are_never_offered_or_a
         .collect();
     fs::write(s.run.join("scan.tsv"), listed).unwrap();
     select(&s, &asked);
-    let out = cli(&s, &["clean", &text(&s.run)]);
+    let out = cli(&s, &["clean", &text(&s.run), "--decision", "1"]);
     assert_eq!(
         out.status.code(),
         Some(3),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let rejected = fs::read_to_string(s.run.join("rejected")).unwrap();
+    let rejected = fs::read_to_string(s.run.join("decisions/1/rejected")).unwrap();
     for p in &never {
         assert!(
             rejected.contains(&format!("protected path\t{}\n", text(p))),
@@ -1599,7 +1663,10 @@ fn an_explorer_restore_or_empty_is_picked_up_by_sync() {
     fs::remove_dir_all(&gone_trashed).unwrap();
     fs::remove_file(info_of_recycled(&gone_trashed)).unwrap();
 
-    let out = cli(&s, &["clean", "--dry-run", &text(&s.run)]);
+    let out = cli(
+        &s,
+        &["clean", "--dry-run", &text(&s.run), "--decision", "1"],
+    );
     assert!(out.status.code().is_some());
     assert_eq!(at("/put").state, "put-back");
     assert_eq!(at("/gone").state, "emptied");

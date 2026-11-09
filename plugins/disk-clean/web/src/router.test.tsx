@@ -6,7 +6,7 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import {NO_DATA, type Loaded} from './lib/data'
 import {fullToken, NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
-import {at, cleanupEvents, fixture, trashedEvents} from './test/fixture'
+import {approvedEvent, at, cleanupEvents, fixture, trashedEvents} from './test/fixture'
 import {PLAN} from './test/page'
 import {address, fakeEventSource, mockServer, query, ringPoints, sendAll, zoomed} from './test/page'
 import './index.css'
@@ -168,9 +168,9 @@ describe('the URL', () => {
   test('the Empty confirm has its own URL over a Trash run: Escape goes back, forward and a reload reopen it', async () => {
     mockServer()
     const {source} = fakeEventSource()
-    const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
+    const loaded = {...fixture, openEvents: () => source}
     const {history, screen} = await open(address('/cleanup', {q: 'you'}), loaded)
-    sendAll(source, trashedEvents)
+    sendAll(source, [approvedEvent(APPROVED), ...trashedEvents])
     await screen.getByRole('contentinfo').getByRole('button', {name: 'Empty these from Trash'}).click()
     const dialog = screen.getByRole('dialog', {name: 'Empty these from the Trash?'})
     await expect.element(dialog).toBeVisible()
@@ -182,7 +182,7 @@ describe('the URL', () => {
     await expect.element(dialog).toBeVisible()
 
     const again = await reload(screen, history, loaded)
-    sendAll(source, trashedEvents)
+    sendAll(source, [approvedEvent(APPROVED), ...trashedEvents, {type: 'replayed', data: {}}])
     await expect.element(again.screen.getByRole('dialog', {name: 'Empty these from the Trash?'})).toBeVisible()
     expect(again.history.location.href).toBe(address('/cleanup/caches/empty', {q: 'you'}))
     await again.screen.unmount()
@@ -192,7 +192,7 @@ describe('the URL', () => {
 
   test('the progress panel and the movie open from the URL, and Escape returns to the previous URL', async () => {
     const {source} = fakeEventSource()
-    const loaded = {...fixture, approved: APPROVED, openEvents: () => source}
+    const loaded = {...fixture, openEvents: () => source}
     const {history, screen} = await open(address('/cleanup', {overlay: 'progress', log: 'problems'}), loaded)
     sendAll(source, cleanupEvents)
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
@@ -223,6 +223,7 @@ describe('the URL', () => {
     await expect.element(movie).toBeInTheDocument()
 
     const again = await reload(screen, history, loaded)
+    sendAll(source, [...cleanupEvents, {type: 'replayed', data: {}}])
     const reopened = again.screen.getByRole('dialog', {name: 'Cleanup movie'})
     await expect.element(reopened).toBeInTheDocument()
     await userEvent.keyboard('{Escape}')

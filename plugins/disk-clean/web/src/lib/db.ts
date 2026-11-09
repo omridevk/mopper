@@ -1,11 +1,11 @@
 import {createCollection} from '@tanstack/db'
 import {QueryClient} from '@tanstack/query-core'
 import {useRouteContext} from '@tanstack/react-router'
-import {CLEANUP_TYPES, createCleanupStore, type Planned, isWorkerEvent, nothingLeft, receiveCleanup, type CleanupEvent} from './cleanup-feed'
+import {CLEANUP_TYPES, createCleanupStore, decisionOf, type Planned, isWorkerEvent, receiveCleanup, startRound, type CleanupEvent, type Round} from './cleanup-feed'
 import {outermost, sumBytes, type Loaded, type TrashEntry} from './data'
 import {ownedCollection} from './owned'
 import {createQueries} from './queries'
-import {createScanStore, receiveScan, type Entry, type ScanEvent} from './scan-feed'
+import {createScanStore, receiveScan, type ScanEvent} from './scan-feed'
 import {openEventSource, stream, type Listener} from './stream'
 
 export type Link = 'live' | 'reconnecting' | 'lost'
@@ -14,7 +14,11 @@ export interface Session {
   id: 'session'
   approved: boolean
   approvedBytes: number
+  trashRun: string
+  active: boolean
+  freshDisk: boolean
   cancelled: boolean
+  closed: boolean
   scanLink: Link
   cleanupLink: Link
 }
@@ -28,45 +32,44 @@ export interface Request {
   retry: boolean
 }
 
-const SCAN_TYPES: ScanEvent['type'][] = ['disk', 'progress', 'item', 'growing', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed']
+const ENDED = 'closed'
+const SCAN_TYPES: (ScanEvent['type'] | typeof ENDED)[] = ['disk', 'progress', 'item', 'growing', 'walked', 'done', 'error', 'rescan', 'unlisted', 'replayed', ENDED]
 const TRASH = 'trash'
+const REPLAYED = 'replayed'
 
 type Rows = {type: typeof TRASH; data: {entries: TrashEntry[]}}
-const FINAL = new Set<string>(['done', 'error'])
+type Ended = {type: typeof ENDED; data: object}
+const FINAL = new Set<string>(['error', ENDED])
 const CLOSED = 2
 
-function planOf(items: readonly Entry[], approved: readonly string[] | undefined): Planned[] {
-  if (!approved) return []
-  const chosen = new Set(approved)
-  return items.filter(i => chosen.has(i.path)).map(({path, label, bytes, section, exact}) => ({path, label, bytes, section, exact}))
-}
-
-function startSession(approved: boolean, approvedBytes: number): Session {
-  return {id: 'session', approved, approvedBytes, cancelled: false, scanLink: 'live', cleanupLink: 'live'}
-}
+export const NO_SESSION: Session = {id: 'session', approved: false, approvedBytes: 0, trashRun: '', active: false, freshDisk: false, cancelled: false, closed: false, scanLink: 'live', cleanupLink: 'live'}
 
 const linkOf = (state: number): Link => (state === CLOSED ? 'lost' : 'reconnecting')
 
-function scanListener(setLink: (link: Link) => void): Listener<ScanEvent | Rows> {
+function scanListener(setLink: (link: Link) => void, finished: () => boolean): Listener<ScanEvent | Rows | Ended> {
   return {
     types: [...SCAN_TYPES, TRASH],
-    toEvent: (type, data) => ({type, data}) as ScanEvent | Rows,
+    toEvent: (type, data) => (type === 'done' && isWorkerEvent(type, data) ? null : ({type, data} as ScanEvent | Rows | Ended)),
     isFinal: event => FINAL.has(event.type),
     onDrop: state => {
       setLink(linkOf(state))
-      return state === CLOSED ? {type: 'error', data: {message: 'Lost the connection to the scan', elapsed_ms: 0}} : null
+      return state === CLOSED && !finished() ? {type: 'error', data: {message: 'Lost the connection to the scan', elapsed_ms: 0}} : null
     },
     onLive: () => setLink('live'),
   }
 }
 
-function cleanupListener(setLink: (link: Link) => void): Listener<CleanupEvent | Rows> {
+type Replayed = {type: typeof REPLAYED; data: object}
+type CleanupFeed = CleanupEvent | Rows | Replayed
+
+function cleanupListener(setLink: (link: Link) => void, caughtUp: () => void): Listener<CleanupFeed> {
   return {
-    types: [...CLEANUP_TYPES, TRASH],
-    toEvent: (type, data) => (isWorkerEvent(type, data) ? ({type, data} as CleanupEvent | Rows) : null),
-    isFinal: nothingLeft,
+    types: [...CLEANUP_TYPES, TRASH, REPLAYED],
+    toEvent: (type, data) => (isWorkerEvent(type, data) ? ({type, data} as CleanupFeed) : null),
+    isFinal: () => false,
     onDrop: state => {
       setLink(linkOf(state))
+      if (state === CLOSED) caughtUp()
       return null
     },
     onLive: () => setLink('live'),
@@ -78,9 +81,8 @@ const bytesOf = (plan: readonly Planned[]) => sumBytes(outermost(plan).filter(p 
 function createBase(loaded: Loaded) {
   const scan = createScanStore(loaded)
   const cleanup = createCleanupStore()
-  const plan = planOf([...scan.items.synced.values()], loaded.approved)
-  const session = ownedCollection<Session>(s => s.id, [startSession(loaded.approved !== undefined, bytesOf(plan))])
-  const planned = ownedCollection<Planned>(p => p.path, plan)
+  const session = ownedCollection<Session>(s => s.id, [NO_SESSION])
+  const planned = ownedCollection<Planned>(p => p.path, [])
   return {
     loaded,
     scan,
@@ -117,8 +119,7 @@ export function createDb(loaded: Loaded) {
 
 export type Db = ReturnType<typeof createDb>
 
-const url = (db: Base) => `/events?token=${encodeURIComponent(db.loaded.token)}`
-const opener = (db: Base) => () => (db.loaded.openEvents ?? openEventSource)(url(db))
+const opener = (db: Base, path: string) => () => (db.loaded.openEvents ?? openEventSource)(`${path}?token=${encodeURIComponent(db.loaded.token)}`)
 
 const isRows = (event: {type: string}): event is Rows => event.type === TRASH
 
@@ -134,12 +135,25 @@ function splitRows<E extends {type: string}>(db: Base, events: readonly (E | Row
   return events.filter((event): event is E => !isRows(event))
 }
 
-export function receiveScanEvents(db: Base, events: readonly (ScanEvent | Rows)[]) {
-  receiveScan(db.scan, splitRows<ScanEvent>(db, events))
+function closeStreams(db: Base) {
+  db.streams.scan?.()
+  db.streams.cleanup?.()
+  db.streams.scan = null
+  db.streams.cleanup = null
 }
 
-export function receiveCleanupEvents(db: Base, events: readonly (CleanupEvent | Rows)[]) {
-  receiveCleanup(db.cleanup, db.plan.synced, splitRows<CleanupEvent>(db, events))
+const isEnded = (event: {type: string}): event is Ended => event.type === ENDED
+
+export function receiveScanEvents(db: Base, events: readonly (ScanEvent | Rows | Ended)[]) {
+  const scan = splitRows<ScanEvent | Ended>(db, events)
+  receiveScan(
+    db.scan,
+    scan.filter((event): event is ScanEvent => !isEnded(event)),
+  )
+  if (scan.some(event => event.type === 'disk') && db.session.synced.get('session')?.approved) writeSession(db, {freshDisk: true})
+  if (!scan.some(isEnded)) return
+  writeSession(db, {closed: true, active: false})
+  closeStreams(db)
 }
 
 export function writeSession(db: Base, patch: Partial<Session>) {
@@ -148,25 +162,86 @@ export function writeSession(db: Base, patch: Partial<Session>) {
   db.session.write(writes => writes.put({...current, ...patch}))
 }
 
-export function openScan(db: Base) {
-  db.streams.scan?.()
-  db.streams.scan = stream(opener(db), scanListener(scanLink => writeSession(db, {scanLink})), events => receiveScanEvents(db, events))
+export function beginRound(db: Base, {decision, items, trash_run}: Pick<Round, 'decision' | 'items' | 'trash_run'>) {
+  startRound(db.cleanup, decision, trash_run)
+  db.plan.write(writes => {
+    writes.clear()
+    items.forEach(writes.put)
+  })
+  writeSession(db, {approved: true, approvedBytes: bytesOf(items), trashRun: trash_run, active: true, freshDisk: false})
 }
 
-export function openCleanup(db: Base) {
+function isActive(db: Base) {
+  const approved = db.session.synced.get('session')?.approved === true
+  return (approved && !db.cleanup.settled) || db.cleanup.job !== ''
+}
+
+function waitsItsTurn(db: Base, event: CleanupEvent) {
+  const {decision, settled} = db.cleanup
+  return decision > 0 && !settled && decisionOf(event) > decision
+}
+
+function isPast(db: Base, event: CleanupEvent) {
+  const decision = decisionOf(event)
+  return event.type !== 'approved' && decision > 0 && decision < db.cleanup.decision
+}
+
+const FREE_FIGURES = new Set<string>(['started', 'free', 'done', 'empty_started', 'empty_done'])
+
+const isReplayed = (event: {type: string}): event is Replayed => event.type === REPLAYED
+
+export function receiveCleanupEvents(db: Base, feed: readonly CleanupFeed[]) {
+  const events = feed.filter((event): event is CleanupEvent | Rows => !isReplayed(event))
+  if (events.length < feed.length) queueMicrotask(db.cleanup.caughtUp)
+  let pending: CleanupEvent[] = []
+  const flush = () => {
+    if (pending.length > 0) receiveCleanup(db.cleanup, db.plan.synced, pending)
+    pending = []
+  }
+  for (const event of splitRows<CleanupEvent>(db, events)) {
+    if (isPast(db, event)) continue
+    if (waitsItsTurn(db, event)) flush()
+    if (waitsItsTurn(db, event)) {
+      db.cleanup.later.push(event)
+      continue
+    }
+    if (event.type === 'approved') {
+      flush()
+      if (event.data.decision !== db.cleanup.decision) beginRound(db, event.data)
+      db.cleanup.run ||= event.data.trash_run
+      writeSession(db, {trashRun: event.data.trash_run})
+    }
+    pending.push(event)
+  }
+  flush()
+  if (events.some(event => FREE_FIGURES.has(event.type))) writeSession(db, {freshDisk: false})
+  const later = db.cleanup.settled ? db.cleanup.later.splice(0) : []
+  if (later.length > 0) return receiveCleanupEvents(db, later)
+  writeSession(db, {active: isActive(db)})
+}
+
+export function openScan(db: Base) {
+  db.streams.scan?.()
+  const listener = scanListener(
+    scanLink => writeSession(db, {scanLink}),
+    () => db.scan.scan.synced.get('scan')?.done === true,
+  )
+  db.streams.scan = stream(opener(db, '/events'), listener, events => receiveScanEvents(db, events))
+}
+
+function openCleanup(db: Base) {
   if (db.streams.cleanup) return
-  db.streams.cleanup = stream(opener(db), cleanupListener(cleanupLink => writeSession(db, {cleanupLink})), events => receiveCleanupEvents(db, events))
+  db.streams.cleanup = stream(
+    opener(db, '/clean-events'),
+    cleanupListener(cleanupLink => writeSession(db, {cleanupLink}), db.cleanup.caughtUp),
+    events => receiveCleanupEvents(db, events),
+  )
 }
 
 function connect(db: Base) {
-  if (db.loaded.live && !db.streams.scan) openScan(db)
-  if (db.session.synced.get('session')?.approved) openCleanup(db)
-  return () => {
-    db.streams.scan?.()
-    db.streams.cleanup?.()
-    db.streams.scan = null
-    db.streams.cleanup = null
-  }
+  if (!db.streams.scan) openScan(db)
+  openCleanup(db)
+  return () => closeStreams(db)
 }
 
 export function useDb() {

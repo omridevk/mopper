@@ -6,19 +6,23 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const FREE_EVERY: Duration = Duration::from_millis(500);
-const EVENTS: &str = "clean.events";
+pub const EVENTS: &str = "clean.events";
+const LOG: &str = "clean.log";
 const STATUS: &str = "status";
 const LOCK: &str = "clean.lock";
+const DECISIONS: &str = "decisions";
 const LOCK_TRIES: usize = 50;
 const RECORD_TRIES: usize = 1500;
-const ALREADY_RUNNING: i32 = 4;
+const TURN_EVERY: Duration = Duration::from_millis(200);
+const UNFINISHED: [&str; 2] = ["queued", "pending"];
+const FINISHED: [&str; 2] = ["done", "abandoned"];
 pub const PATH_CHANGED: &str = "path changed since the scan";
 
 fn command(id: &str) -> Option<(&'static str, &'static [&'static str])> {
@@ -320,63 +324,82 @@ fn print_dry_run(plan: &Plan, mode: Mode) {
     println!("# {} items, {} bytes", plan.count(), plan.bytes);
 }
 
-fn take_lock(dir: &Path) -> io::Result<Option<fs::File>> {
+fn try_lock(path: &Path, tries: usize) -> io::Result<Option<fs::File>> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join(LOCK))?;
-    for _ in 0..LOCK_TRIES {
+        .open(path)?;
+    for attempt in 0..tries {
         if file.try_lock().is_ok() {
             return Ok(Some(file));
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if attempt + 1 < tries {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     Ok(None)
 }
 
-fn lock_is_free(dir: &Path) -> bool {
-    match fs::File::open(dir.join(LOCK)) {
+pub fn lock_is_free(path: &Path) -> bool {
+    match fs::File::open(path) {
         Ok(file) => file.try_lock_shared().is_ok(),
         Err(_) => true,
     }
 }
 
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+pub fn decision_path(dir: &Path, n: u64) -> PathBuf {
+    dir.join(DECISIONS).join(format!("{n}.json"))
+}
+
+pub fn decision_dir(dir: &Path, n: u64) -> PathBuf {
+    dir.join(DECISIONS).join(n.to_string())
+}
+
+pub fn read_decision(dir: &Path, n: u64) -> Option<Value> {
+    fs::read(decision_path(dir, n))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+pub fn decisions(dir: &Path) -> Vec<u64> {
+    let mut found: Vec<u64> = fs::read_dir(dir.join(DECISIONS))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json")?.parse().ok())
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+pub fn log_line(dir: &Path, line: &str) {
+    let written = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(LOG))
+        .and_then(|mut log| writeln!(log, "{line}"));
+    if let Err(e) = written {
+        eprintln!("disk-clean: could not write clean.log: {e}");
     }
 }
 
-fn fresh_events(dir: &Path) -> io::Result<fs::File> {
-    let path = dir.join(EVENTS);
-    remove_if_present(&path)?;
-    fs::OpenOptions::new()
-        .create_new(true)
-        .append(true)
-        .open(path)
+pub fn abandon(dir: &Path, n: u64, status: &str, reason: &str) -> io::Result<()> {
+    Events::round(dir, n).emit("abandoned", json!({"reason": reason}));
+    log_line(dir, &format!("decision {n} {status}: {reason}"));
+    let work = decision_dir(dir, n);
+    fs::create_dir_all(&work)?;
+    fs::write(work.join(STATUS), format!("{status}\n"))
 }
 
-pub fn abandon(dir: &Path, status: &str, reason: &str) -> io::Result<()> {
-    let mut events = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(EVENTS))?;
-    writeln!(
-        events,
-        "{}",
-        json!({"event": "abandoned", "reason": reason})
-    )?;
-    fs::write(dir.join(STATUS), format!("{status}\n"))
-}
-
-pub fn run_status(dir: &Path) -> String {
-    let status = fs::read_to_string(dir.join(STATUS)).unwrap_or_default();
+pub fn run_status(dir: &Path, n: u64) -> String {
+    let work = decision_dir(dir, n);
+    let status = fs::read_to_string(work.join(STATUS)).unwrap_or_default();
     let status = status.trim();
-    if status == "pending" && lock_is_free(dir) {
+    if UNFINISHED.contains(&status) && lock_is_free(&work.join(LOCK)) {
         let _ = abandon(
             dir,
+            n,
             "interrupted",
             "the cleanup process exited before it finished",
         );
@@ -385,41 +408,42 @@ pub fn run_status(dir: &Path) -> String {
     status.to_string()
 }
 
-pub fn clear_previous_run(dir: &Path) -> io::Result<()> {
-    if !lock_is_free(dir) {
-        return Ok(());
-    }
-    remove_if_present(&dir.join(EVENTS))?;
-    remove_if_present(&dir.join(STATUS))
+pub fn is_unfinished(status: &str) -> bool {
+    UNFINISHED.contains(&status)
 }
 
-pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
+fn earlier_unfinished(dir: &Path, n: u64) -> bool {
+    decisions(dir)
+        .into_iter()
+        .filter(|m| *m < n)
+        .any(|m| is_unfinished(&run_status(dir, m)))
+}
+
+pub fn decision_of(arg: Option<&str>) -> Option<u64> {
+    arg.and_then(|d| d.parse::<u64>().ok()).filter(|n| *n > 0)
+}
+
+pub fn queue(run_dir: &str, decision: Option<u64>, dry_run: bool) -> io::Result<i32> {
     let dir = Path::new(run_dir);
-    if run_dir.is_empty() {
-        eprintln!("usage: disk-clean clean [--dry-run] <run_dir>");
+    let (false, Some(n)) = (run_dir.is_empty(), decision) else {
+        eprintln!("usage: disk-clean clean [--dry-run] RUN_DIR --decision N");
         return Ok(2);
-    }
+    };
     if !dir.is_dir() {
         eprintln!("no run directory at {run_dir}");
         return Ok(2);
     }
-    if !dir.join("selection.json").is_file() {
-        eprintln!("no selection.json in {run_dir}: approve a selection in the review page first");
+    let Some(selection) = read_decision(dir, n) else {
+        eprintln!(
+            "no decision {n} in {run_dir}: approve a selection in the review page first (disk-clean wait {run_dir} prints each one)"
+        );
         return Ok(2);
-    }
+    };
     let scan_path = dir.join("scan.tsv");
     if !scan_path.is_file() {
         eprintln!("missing scan.tsv in {run_dir}");
         return Ok(2);
     }
-    let selection: Value =
-        match fs::read(dir.join("selection.json")).map(|b| serde_json::from_slice(&b)) {
-            Ok(Ok(v)) => v,
-            _ => {
-                eprintln!("selection.json is not valid JSON");
-                Value::Null
-            }
-        };
     let items = selection
         .get("items")
         .and_then(Value::as_array)
@@ -433,48 +457,69 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
         return Ok(if plan.count() == 0 { 3 } else { 0 });
     }
 
-    let Some(lock) = take_lock(dir)? else {
-        eprintln!("another clean is already running for {run_dir}");
-        return Ok(ALREADY_RUNNING);
+    let work = decision_dir(dir, n);
+    fs::create_dir_all(&work)?;
+    let Some(own) = try_lock(&work.join(LOCK), LOCK_TRIES)? else {
+        println!("decision {n} is already queued or running");
+        return Ok(0);
     };
+    let before = fs::read_to_string(work.join(STATUS)).unwrap_or_default();
+    if FINISHED.contains(&before.trim()) {
+        println!("decision {n} already ran ({})", before.trim());
+        return Ok(0);
+    }
     let rejected: String = plan
         .rejected
         .iter()
         .map(|(reason, value)| format!("{reason}\t{value}\n"))
         .collect();
     let (to_trash, to_remove) = plan.split(mode, &util::home());
-    fs::write(dir.join("rm-list"), lines(&to_trash))?;
-    fs::write(dir.join("now-list"), lines(&to_remove))?;
-    fs::write(dir.join("cmd-list"), lines(&plan.cmds))?;
-    fs::write(dir.join("wt-list"), lines(&plan.worktrees))?;
-    fs::write(dir.join("rejected"), &rejected)?;
+    fs::write(work.join("rm-list"), lines(&to_trash))?;
+    fs::write(work.join("now-list"), lines(&to_remove))?;
+    fs::write(work.join("cmd-list"), lines(&plan.cmds))?;
+    fs::write(work.join("wt-list"), lines(&plan.worktrees))?;
+    fs::write(work.join("rejected"), &rejected)?;
 
     let (kept, total_bytes) = (plan.count(), plan.bytes);
     if kept == 0 {
-        eprintln!("nothing passed validation. see {run_dir}/rejected");
-        drop(fresh_events(dir)?);
+        eprintln!(
+            "nothing passed validation. see {}",
+            util::shown(&work.join("rejected"))
+        );
         abandon(
             dir,
+            n,
             "abandoned",
             "nothing passed the safety checks, so nothing was deleted",
         )?;
         return Ok(3);
     }
 
-    fs::write(dir.join(STATUS), "pending\n")?;
-    let log_path = dir.join("clean.log");
-    let log = fs::File::create(&log_path)?;
+    let waits = !lock_is_free(&dir.join(LOCK)) || earlier_unfinished(dir, n);
+    fs::write(
+        work.join(STATUS),
+        if waits { "queued\n" } else { "pending\n" },
+    )?;
+    let log_path = dir.join(LOG);
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
     let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.args(["clean", "--worker", run_dir])
+    cmd.args(["clean", "--worker", run_dir, &n.to_string()])
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    platform::pass_lock(&mut cmd, &lock);
+    platform::pass_lock(&mut cmd, &own);
     let child = platform::spawn_detached(&mut cmd)?;
     let pid = child.id();
-    fs::write(dir.join("worker.pid"), format!("{pid}\n"))?;
+    fs::write(work.join("worker.pid"), format!("{pid}\n"))?;
 
+    println!("decision: {n}");
     println!("queued  : {kept} items ({total_bytes} bytes)");
+    if waits {
+        println!("waits   : for the cleanup before it; starts when that one finishes");
+    }
     println!("rejected: {}", rejected.lines().count());
     println!("pid     : {pid}");
     println!("log     : {}", util::shown(&log_path));
@@ -484,19 +529,29 @@ pub fn queue(run_dir: &str, dry_run: bool) -> io::Result<i32> {
 pub struct Events {
     file: Option<Mutex<fs::File>>,
     start: Instant,
+    decision: Option<u64>,
+}
+
+fn open_events(dir: &Path) -> Option<Mutex<fs::File>> {
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(EVENTS))
+        .ok()
+        .map(Mutex::new)
 }
 
 impl Events {
-    fn open(dir: &Path) -> Events {
+    pub fn round(dir: &Path, decision: u64) -> Events {
         Events {
-            file: fresh_events(dir).ok().map(Mutex::new),
+            file: open_events(dir),
             start: Instant::now(),
+            decision: Some(decision),
         }
     }
 
     pub fn append(dir: &Path) -> Events {
-        let path = dir.join(EVENTS);
-        let so_far = util::read_lines(&path)
+        let so_far = util::read_lines(&dir.join(EVENTS))
             .iter()
             .rev()
             .find_map(|line| {
@@ -506,30 +561,30 @@ impl Events {
                     .as_u64()
             })
             .unwrap_or(0);
-        let file = fs::OpenOptions::new().create(true).append(true).open(path);
         let now = Instant::now();
         Events {
-            file: file.ok().map(Mutex::new),
+            file: open_events(dir),
             start: now
                 .checked_sub(Duration::from_millis(so_far + 1))
                 .unwrap_or(now),
+            decision: None,
         }
     }
 
     pub fn emit(&self, event: &str, mut data: Value) {
         data["event"] = json!(event);
         data["elapsed_ms"] = json!(self.start.elapsed().as_millis() as u64);
+        if let Some(n) = self.decision {
+            data["decision"] = json!(n);
+        }
         if let Some(Ok(mut f)) = self.file.as_ref().map(Mutex::lock) {
             let _ = f.write_all(format!("{data}\n").as_bytes());
         }
     }
 }
 
-fn planned_bytes(dir: &Path) -> HashMap<String, i64> {
-    let selection: Value = fs::read(dir.join("selection.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or(Value::Null);
+fn planned_bytes(dir: &Path, n: u64) -> HashMap<String, i64> {
+    let selection = read_decision(dir, n).unwrap_or(Value::Null);
     selection
         .get("items")
         .and_then(Value::as_array)
@@ -632,7 +687,7 @@ struct Trashed {
 }
 
 fn move_all(
-    run_dir: &Path,
+    run: &str,
     home: &str,
     list: &[String],
     bytes_of: &dyn Fn(&str) -> i64,
@@ -662,7 +717,6 @@ fn move_all(
             return out;
         }
     };
-    let run = trash::run_id(run_dir);
     let check = |target: &str| check(target).map_err(str::to_string);
     for batch in list.chunks(trash::BATCH) {
         let wanted: Vec<trash::Wanted> = batch
@@ -672,7 +726,7 @@ fn move_all(
                 bytes: bytes_of(t),
             })
             .collect();
-        let moved = record.move_to_trash(&run, &wanted, &check);
+        let moved = record.move_to_trash(run, &wanted, &check);
         let rows: Vec<trash::Entry> = moved
             .iter()
             .filter_map(|m| match m {
@@ -723,18 +777,46 @@ fn listed(dir: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn worker(run_dir: &str) -> io::Result<i32> {
+fn wait_for_turn(dir: &Path, n: u64, events: &Events) -> io::Result<fs::File> {
+    let mut announced = false;
+    loop {
+        if !earlier_unfinished(dir, n)
+            && let Some(lock) = try_lock(&dir.join(LOCK), 1)?
+        {
+            return Ok(lock);
+        }
+        if !announced {
+            announced = true;
+            events.emit("queued", json!({}));
+            println!("decision {n} queued: it starts when the cleanup before it finishes");
+        }
+        std::thread::sleep(TURN_EVERY);
+    }
+}
+
+pub fn worker(run_dir: &str, decision: Option<u64>) -> io::Result<i32> {
     platform::keep_lock_from_commands();
     let dir = Path::new(run_dir);
-    let events = Events::open(dir);
+    let Some(n) = decision else {
+        eprintln!("usage: disk-clean clean --worker RUN_DIR N");
+        return Ok(2);
+    };
+    let work = decision_dir(dir, n);
+    fs::create_dir_all(&work)?;
+    let events = Events::round(dir, n);
+    let _turn = wait_for_turn(dir, n, &events)?;
+    fs::write(work.join(STATUS), "pending\n")?;
     let run = format!("{}-{}", util::now(), std::process::id());
-    println!("started {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
-
+    println!(
+        "decision {n} started {}",
+        platform::local_time(c"%Y-%m-%d %H:%M:%S")
+    );
+    let dir = work.as_path();
     let rm_list = listed(dir, "rm-list");
     let now_list = listed(dir, "now-list");
     let wt_list = listed(dir, "wt-list");
     let cmd_list = listed(dir, "cmd-list");
-    let planned = planned_bytes(dir);
+    let planned = planned_bytes(Path::new(run_dir), n);
     let bytes_of = |key: &str| planned.get(key).copied().unwrap_or(0);
     let home = util::home();
     let tmp_base = platform::user_tmp_base();
@@ -767,7 +849,14 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     let trashed = std::thread::scope(|s| -> io::Result<Trashed> {
         let sampler = &events;
         s.spawn(move || sample_free(sampler, stop));
-        let trashed = move_all(dir, &home, &rm_list, &bytes_of, &events, &rm_check);
+        let trashed = move_all(
+            &trash::round_run(Path::new(run_dir), n),
+            &home,
+            &rm_list,
+            &bytes_of,
+            &events,
+            &rm_check,
+        );
 
         if !now_list.is_empty() {
             println!(
@@ -842,7 +931,7 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
     println!("removed: {count} items, {bytes} bytes");
     if trashed.count > 0 {
         println!(
-            "trashed: {} items, {} bytes, in the Trash until it is emptied (undo: disk-clean undo {run_dir}; empty them: disk-clean empty {run_dir})",
+            "trashed: {} items, {} bytes, in the Trash until it is emptied (undo: disk-clean undo {run_dir} --decision {n}; empty them: disk-clean empty {run_dir} --decision {n})",
             trashed.count, trashed.bytes
         );
     }
@@ -850,7 +939,10 @@ pub fn worker(run_dir: &str) -> io::Result<i32> {
         "free space changed by {} bytes since the cleanup started ({free_at_start} -> {after})",
         after - free_at_start
     );
-    println!("finished {}", platform::local_time(c"%Y-%m-%d %H:%M:%S"));
+    println!(
+        "decision {n} finished {}",
+        platform::local_time(c"%Y-%m-%d %H:%M:%S")
+    );
     events.emit(
         "done",
         json!({

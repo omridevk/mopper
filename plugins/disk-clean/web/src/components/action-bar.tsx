@@ -151,6 +151,7 @@ export function ActionBar({
   progress = null,
   phase,
   actions,
+  last,
   failure,
   about,
   onAbout,
@@ -162,6 +163,7 @@ export function ActionBar({
   progress?: CleanupProgress | null
   phase: Phase
   actions?: ReactNode
+  last?: ReactNode
   failure?: ReactNode
   about: boolean
   onAbout: (open: boolean) => void
@@ -187,9 +189,10 @@ export function ActionBar({
             <WarningChip warnings={warnings} />
           </div>
         </div>
-        <HelpLine scan={scan} about={about} onAbout={onAbout} />
+        {last ?? <HelpLine scan={scan} about={about} onAbout={onAbout} />}
         {failure}
       </div>
+      {last && actions}
       <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
       <Tooltip>
         <TooltipTrigger delay={80} render={<span className="inline-flex shrink-0" />}>

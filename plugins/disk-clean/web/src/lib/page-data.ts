@@ -9,7 +9,7 @@ import {firstSection, isPickable, sumBytes} from './data'
 import {useDb, type Db} from './db'
 import {phaseOf, useCleanupProgress} from './progress'
 import type {CategoryHead, Entry, Nest, ScanState} from './scan-feed'
-import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
+import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Picks, type Selector} from './selection'
 import {useScanState, useSession, useVersion} from './views'
 
 export interface Ending {
@@ -35,7 +35,8 @@ export interface Selection {
   sections: number
 }
 
-const CANCELLED: Ending = {title: 'Cancelled', body: 'Nothing was deleted. You can close this tab.'}
+const CANCELLED: Ending = {title: 'Cancelled', body: 'Nothing more will be deleted. Claude closes the session in your terminal; you can close this tab.'}
+const CLOSED: Ending = {title: 'Session closed', body: 'Claude closed this disk-clean session. Nothing more will be deleted; you can close this tab.'}
 
 interface Cached {
   version: number
@@ -92,29 +93,8 @@ function selectorOf(db: Db) {
   return selector
 }
 
-function partOf(selected: Entry[]): Fragment<Entry> {
-  const exactBytes = sumBytes(selected.filter(e => e.exact))
-  return {items: selected, key: '', risk: selected[0]?.risk ?? 'safe', selected, exactBytes, apparentBytes: sumBytes(selected) - exactBytes}
-}
-
-function approvedOf(db: Db, approved: readonly string[]): Decoded<Entry> {
-  const bySection = new Map<string, Entry[]>()
-  for (const path of approved) {
-    const entry = db.scan.items.synced.get(path)
-    if (entry) bySection.set(entry.section, [...(bySection.get(entry.section) ?? []), entry])
-  }
-  const on = Object.fromEntries(approved.map(path => [path, true] as const))
-  return {on, parts: [...bySection.values()].map(partOf)}
-}
-
-const approvals = new WeakMap<Db, Decoded<Entry>>()
-
 function decodedNow(db: Db, picks: Picks): Decoded<Entry> {
-  const {approved} = db.loaded
-  if (!approved) return selectorOf(db).decode(categoriesNow(db), picks)
-  const known = approvals.get(db) ?? approvedOf(db, approved)
-  approvals.set(db, known)
-  return known
+  return selectorOf(db).decode(categoriesNow(db), picks)
 }
 
 function rowSelectionNow(db: Db, picks: Picks): RowSelectionState {
@@ -185,8 +165,8 @@ export function firstSectionNow(db: Db) {
 
 export function canConfirm(db: Db, picks: Picks) {
   const scan = scanNow(db)
-  const approved = db.session.synced.get('session')?.approved ?? false
-  return scan !== undefined && scan.error === '' && !approved && selectedNow(db, picks).length > 0
+  const active = db.session.synced.get('session')?.active ?? false
+  return scan !== undefined && scan.error === '' && !active && selectedNow(db, picks).length > 0
 }
 
 export function hasSection(db: Db, section: string) {
@@ -199,7 +179,7 @@ export function scanSettled(db: Db) {
 }
 
 export function knownPicks(db: Db, picks: Picks): Picks {
-  if (!scanSettled(db) || db.loaded.approved) return picks
+  if (!scanSettled(db)) return picks
   const selector = selectorOf(db)
   selector.sync(categoriesNow(db))
   const known = (value: string) =>
@@ -213,6 +193,11 @@ export function knownPicks(db: Db, picks: Picks): Picks {
 export function scanReady(db: Db) {
   const {collection} = db.scan.scan
   return collection.isReady() ? Promise.resolve() : new Promise<void>(resolve => collection.onFirstReady(resolve))
+}
+
+export function cleanupReady(db: Db) {
+  const connected = db.connection.subscribeChanges(() => {})
+  return db.cleanup.replayed.finally(() => connected.unsubscribe())
 }
 
 export function isApproved(db: Db) {
@@ -346,7 +331,12 @@ export function useProgress() {
   const scan = useScanState(db)
   const progress = useCleanupProgress(db)
   const scanning = !scan.done && scan.error === '' && !scan.stopped
-  return {progress, phase: phaseOf(scanning, progress)}
+  return {progress, phase: phaseOf(scanning, progress), idle: phaseOf(scanning, null), active: progress?.active === true}
+}
+
+function endingOf({closed, cancelled}: {closed: boolean; cancelled: boolean}) {
+  if (cancelled) return CANCELLED
+  return closed ? CLOSED : null
 }
 
 const attempts = new WeakMap<Db, Preview & {mode: Mode}>()
@@ -371,7 +361,7 @@ export function useDecisions() {
     void askTrash(db, action, ids)
   }
   const retryTrash = (action: 'undo' | 'empty') => trash(action, trashAttempts.get(db)?.get(action) ?? [])
-  return {approved: session.approved, done: session.cancelled ? CANCELLED : null, approve, retry, cancel, trash, retryTrash}
+  return {active: session.active, done: endingOf(session), approve, retry, cancel, trash, retryTrash}
 }
 
 export function useConnection() {

@@ -15,7 +15,7 @@ import type {ScanEvent} from './lib/scan-feed'
 import {NO_PICKS, picksOf, rowSelectionOf} from './lib/selection'
 import {categoriesOf} from './lib/views'
 import {squarifyInBounds} from './lib/treemap-tile'
-import {at, bigSection, category, cleanupEvents, fixture, item, withSection} from './test/fixture'
+import {approvedEvent, at, bigSection, category, cleanupEvents, fixture, item, withSection} from './test/fixture'
 import {fakeEventSource, mockServer, PLAN, query, ringPoints, sendAll, sendRaw} from './test/page'
 import './index.css'
 
@@ -396,9 +396,9 @@ describe('live page', () => {
   test('rescan keeps the view, filters and picks, and replaces the results at done', async () => {
     vi.spyOn(window, 'fetch').mockImplementation(async () => new Response('{}', {status: 202}))
     const sources: ReturnType<typeof fakeEventSource>[] = []
-    const openEvents = () => {
+    const openEvents = (url: string) => {
       const fake = fakeEventSource()
-      sources.push(fake)
+      if (url.startsWith('/events')) sources.push(fake)
       return fake.source
     }
     const send = (event: ScanEvent) => sources.at(-1)?.send(event)
@@ -540,7 +540,8 @@ async function confirmDelete(screen: Screen) {
 
 function approvedDb() {
   const caches = fixture.data.categories[0]?.items.map(i => i.path) ?? []
-  const db = createDb({...fixture, approved: caches})
+  const db = createDb(fixture)
+  receiveCleanupEvents(db, [approvedEvent(caches) as CleanupEvent])
   for (const query of Object.values(db.queries)) void query.preload()
   return db
 }
@@ -550,7 +551,7 @@ async function approveInApp() {
   const {source} = fakeEventSource()
   const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
   await confirmDelete(screen)
-  await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+  await barSays(screen, 'Approved · waiting for Claude to run it')
   return {screen, source}
 }
 
@@ -569,7 +570,6 @@ describe('cleanup in the app', () => {
   test('approve hands back to Claude, then the bar, list and panel follow the real deletion', async () => {
     const {screen, source} = await approveInApp()
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
-    sendRaw(source, 'waiting', {})
     for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
     await expect.element(screen.getByText('Approved: the cleanup runs in the background')).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
@@ -588,14 +588,14 @@ describe('cleanup in the app', () => {
     sendAll(source, cleanupEvents.slice(3))
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
     expect(fillOf(screen)).toBe('scaleX(1)')
-    await expect.element(screen.getByText('3 of 4 done')).toBeVisible()
-    await expect.element(screen.getByRole('progressbar', {name: 'Application caches done'})).toHaveAttribute('aria-valuenow', '93')
-    await expect.element(screen.getByText('not removed: still present after removal: permission denied')).toBeVisible()
+    await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeEnabled()
+    await expect.element(screen.getByRole('progressbar', {name: 'Application caches done'})).not.toBeInTheDocument()
     await expect.element(screen.getByText('Freed', {exact: true})).toBeVisible()
-    await expect
-      .element(screen.getByRole('contentinfo'))
-      .toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-clean/)
-    expect(source.readyState, 'stays open: Undo, Empty and the Trash record can still change').toBe(1)
+    const last = screen.getByRole('region', {name: 'Last cleanup'})
+    await expect.element(last).toMatchTextContent(/^Cleanup finished · Freed 3\.5 GB · 4 items · 3\.8 GB approved/)
+    await expect.element(last.getByText('still present after removal: permission denied', {exact: false})).toBeVisible()
+    for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).toBeInTheDocument()
+    expect(source.readyState, 'stays open: the next round, Undo, Empty and the Trash record can still change').toBe(1)
 
     await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
@@ -652,7 +652,7 @@ describe('cleanup in the app', () => {
     await barSays(screen, 'Reconnecting to disk-clean…')
     source.readyState = 1
     source.dispatchEvent(new Event('open'))
-    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    await barSays(screen, 'Approved · waiting for Claude to run it')
     sendAll(source, cleanupEvents.slice(0, 3))
     await barSays(screen, 'Deleting ·')
     source.readyState = 0
@@ -666,10 +666,8 @@ describe('cleanup in the app', () => {
   test('a reload during the cleanup lands back in the app with the bar and panel', async () => {
     const {source} = fakeEventSource()
     const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/code/web/node_modules']
-    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at()} />)
-    await expect.element(screen.getByRole('checkbox', {name: /node_modules/})).toBeChecked()
-    await expect.element(screen.getByRole('checkbox', {name: /app-b/})).not.toBeChecked()
-    sendAll(source, cleanupEvents.slice(0, 3))
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
+    sendAll(source, [approvedEvent(approved), ...cleanupEvents.slice(1, 3)])
     await barSays(screen, 'Deleting · 2.0 GB of 5.0 GB · 1 of 5')
     await details(screen).click()
     await expect.element(screen.getByRole('dialog', {name: 'Cleanup progress'}).getByText('Removed ~/Library/Caches/app-a')).toBeVisible()
@@ -689,8 +687,7 @@ describe('cleanup in the app', () => {
   test('reduced motion opens the movie address as the final numbers and a static list, with no film', async () => {
     await emulateReducedMotion('reduce')
     const {source} = fakeEventSource()
-    const approved = ['/Users/you/Library/Caches/app-a', '/Users/you/Library/Caches/app-b', '/Users/you/Library/Caches/app-c', '/Users/you/Library/Caches/app-d']
-    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at('/cleanup/caches?overlay=movie')} />)
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at('/cleanup/caches?overlay=movie')} />)
     await sendAll(source, cleanupEvents)
     const movie = screen.getByRole('dialog', {name: 'Cleanup movie'})
     await expect.element(movie.getByRole('heading', {name: 'You freed'})).toBeVisible()
@@ -709,7 +706,7 @@ describe('cleanup in the app', () => {
     await expect.element(screen.getByRole('button', {name: DELETE})).toBeVisible()
     const before = layoutOf(screen)
     await confirmDelete(screen)
-    await barSays(screen, 'Approved · Claude is showing the commands in your terminal')
+    await barSays(screen, 'Approved · waiting for Claude to run it')
     expect(layoutOf(screen)).toEqual(before)
     expect(fillOf(screen)).toBe('scaleX(1)')
     const status = statusOf(screen)
@@ -783,7 +780,7 @@ describe('cleanup in the app', () => {
     sendAll(source, cleanupEvents.slice(1, 8))
     sendRaw(source, 'done', {free_before: 50 * GB, free_after: 49 * GB, elapsed_ms: 2500})
     await barSays(screen, 'Freed 3.5 GB · 3 removed · 1 kept · 1 not removed')
-    await expect.element(screen.getByRole('contentinfo')).toMatchTextContent(/^Cleanup finishedFreed 3\.5 GB · 4 items · 3\.8 GB approved · a new cleanup starts with \/disk-cleanNot removed/)
+    await expect.element(screen.getByRole('region', {name: 'Last cleanup'})).toMatchTextContent(/^Cleanup finished · Freed 3\.5 GB · 4 items · 3\.8 GB approvedNot removed/)
     await details(screen).click()
     const panel = screen.getByRole('dialog', {name: 'Cleanup progress'})
     await expect.element(panel.getByText('Free space change, all apps')).toBeVisible()
@@ -805,13 +802,12 @@ describe('cleanup in the app', () => {
 
   test('a cleanup that never starts says so and stops waiting', async () => {
     const {screen, source} = await approveInApp()
-    sendRaw(source, 'waiting', {})
-    sendRaw(source, 'abandoned', {reason: 'clean was never run after the approval'})
-    await barSays(screen, 'The cleanup did not start · clean was never run after the approval')
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('The cleanup did not start4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
-    await expect.element(screen.getByText('not run', {exact: true}).first()).toBeVisible()
+    sendRaw(source, 'abandoned', {reason: 'nothing passed the safety checks'})
+    await barSays(screen, 'The cleanup did not start · nothing passed the safety checks')
+    await expect.element(screen.getByRole('region', {name: 'Last cleanup'})).toHaveTextContent('The cleanup did not start · 4 items · 3.8 GB approved')
     expect(fillOf(screen)).toBe('scaleX(0)')
-    expect(source.readyState).toBe(2)
+    expect(source.readyState).toBe(1)
+    await expect.element(screen.getByRole('button', {name: DELETE})).toBeEnabled()
   })
 
   test('a cleanup that stops halfway keeps what it freed and says it stopped', async () => {
@@ -819,7 +815,7 @@ describe('cleanup in the app', () => {
     sendAll(source, cleanupEvents.slice(1, 3))
     sendRaw(source, 'abandoned', {reason: 'the cleanup process exited before it finished'})
     await barSays(screen, 'The cleanup stopped · the cleanup process exited before it finished · freed 2.0 GB')
-    await expect.element(screen.getByRole('contentinfo')).toHaveTextContent('The cleanup stopped before it finished4 items · 3.8 GB approved · a new cleanup starts with /disk-clean')
+    await expect.element(screen.getByRole('region', {name: 'Last cleanup'})).toHaveTextContent('The cleanup stopped before it finished · 4 items · 3.8 GB approved')
   })
 })
 

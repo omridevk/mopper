@@ -14,7 +14,7 @@ import './index.css'
 const GB = 1024 ** 3
 const DELETE = /^Delete \d+ items? · /
 const NOW = 'Delete immediately…'
-const WAITING = 'Approved · Claude is showing the commands in your terminal'
+const WAITING = 'Approved · waiting for Claude to run it'
 const SHOTS = import.meta.env.VITE_TRASH_SHOTS === '1'
 const browser = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
 
@@ -25,6 +25,7 @@ const barSays = (screen: Screen, text: string) => expect.poll(() => statusOf(scr
 const posted = (url: string) => vi.mocked(window.fetch).mock.calls.filter(([to]) => String(to) === url)
 const bodyOf = (url: string, n = 0) => JSON.parse(String((posted(url)[n]?.[1] as RequestInit).body))
 const footer = (screen: Screen) => screen.getByRole('contentinfo')
+const lastCleanup = (screen: Screen) => screen.getByRole('region', {name: 'Last cleanup'})
 const strip = () => document.querySelector('header + section')
 const heroLabel = () => strip()?.querySelector(':scope > div.grow > div:first-child')?.textContent ?? ''
 const statusLine = () => strip()?.querySelector(':scope > div.grow > div:last-child')?.textContent ?? ''
@@ -182,8 +183,7 @@ describe('after a Trash delete: Undo and Empty these', () => {
   test('Moved to Trash is never shown as freed, and Undo puts everything back', async () => {
     const {screen, source} = await trashedApp()
     await expect.poll(heroLabel).toBe('In the Trash · undo available')
-    await expect.element(screen.getByText('in the Trash · undo available').first()).toBeVisible()
-    await expect.poll(() => footer(screen).element().textContent).toMatch(/^Moved to Trash 3\.8 GB · undo available.*in your Trash until you empty it/)
+    await expect.element(lastCleanup(screen)).toMatchTextContent(/^Moved to Trash 3\.8 GB · undo available.*in your Trash until you empty it/)
     expect(statusOf(screen)?.textContent).toContain(`freed ${formatBytes(GB)}`)
     await expect.element(footer(screen).getByRole('button', {name: 'Empty these from Trash'})).toBeVisible()
     await shot('footer-after-trash')
@@ -196,9 +196,8 @@ describe('after a Trash delete: Undo and Empty these', () => {
     await expect.poll(heroLabel).toBe('Putting back')
     await sendAll(source, undoEvents.slice(2))
     await barSays(screen, `Put back ${formatBytes(3.75 * GB)} · nothing left in the Trash`)
-    await expect.element(screen.getByText('put back', {exact: true}).first()).toBeVisible()
     await expect.poll(heroLabel).toBe('Put back')
-    await expect.poll(() => footer(screen).element().textContent).toMatch(new RegExp(`^Put back ${formatBytes(3.75 * GB)} · nothing left in the Trash`))
+    await expect.element(lastCleanup(screen)).toMatchTextContent(new RegExp(`^Put back ${formatBytes(3.75 * GB)} · nothing left in the Trash`))
     await expect.element(footer(screen).getByRole('button', {name: 'Empty these from Trash'})).not.toBeInTheDocument()
   })
 
@@ -224,7 +223,7 @@ describe('after a Trash delete: Undo and Empty these', () => {
     await sendAll(source, emptyEvents.slice(3))
     await barSays(screen, `Freed ${formatBytes(4.75 * GB)} · 5 removed`)
     await expect.poll(heroLabel).toBe('Freed')
-    await expect.element(screen.getByText('emptied from the Trash', {exact: true}).first()).toBeVisible()
+    await expect.element(lastCleanup(screen)).toMatchTextContent(`Cleanup finished · Freed ${formatBytes(4.75 * GB)}`)
 
     await screen.getByRole('button', {name: 'Details'}).click()
     await screen.getByRole('button', {name: 'Watch the movie'}).click()

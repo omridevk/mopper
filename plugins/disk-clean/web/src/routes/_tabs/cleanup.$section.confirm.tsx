@@ -5,7 +5,7 @@ import {useSelectionWarnings} from '@/components/selection-warnings'
 import {messageOf} from '@/lib/api'
 import {useDb} from '@/lib/db'
 import {useBack, useDialogExit} from '@/lib/navigation'
-import {canConfirm, loadPreview, previewAt, scanReady, useDecisions, useHome, useSelection} from '@/lib/page-data'
+import {canConfirm, cleanupReady, loadPreview, previewAt, scanReady, useDecisions, useHome, useSelection} from '@/lib/page-data'
 import {useScanState} from '@/lib/views'
 import {CONFIRM_DEFAULTS, confirmSearch} from '@/lib/search'
 
@@ -14,7 +14,7 @@ export const Route = createFileRoute('/_tabs/cleanup/$section/confirm')({
   search: {middlewares: [stripSearchParams(CONFIRM_DEFAULTS)]},
   loaderDeps: ({search}) => ({add: search.add, drop: search.drop}),
   loader: async ({context, deps, params}) => {
-    await scanReady(context.db)
+    await Promise.all([scanReady(context.db), cleanupReady(context.db)])
     if (!canConfirm(context.db, deps)) throw redirect({to: '/cleanup/$section', params: {section: params.section}, search: true, replace: true})
     return loadPreview(context.db, deps)
   },

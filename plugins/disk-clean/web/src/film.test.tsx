@@ -5,7 +5,7 @@ import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {CleanupEvent} from './lib/cleanup-feed'
 import {formatBytes} from './lib/data'
-import {at, cleanupEvents, fixture} from './test/fixture'
+import {approvedEvent, at, cleanupEvents, fixture} from './test/fixture'
 import {film, finishedEvents, GB, Movie, movieDb, particleCanvas, selected, visibility} from './test/movie'
 import './index.css'
 
@@ -108,8 +108,7 @@ describe('the cleanup movie', () => {
 
   test('the movie traps focus and gives it back to Details when it closes', async () => {
     const source = Object.assign(new EventTarget(), {readyState: 1, close: () => {}})
-    const approved = selected.map(i => i.path)
-    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at()} />)
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
     for (const event of cleanupEvents) source.dispatchEvent(new MessageEvent(event.type, {data: JSON.stringify(event.data)}))
     const details = screen.getByRole('button', {name: 'Details'})
     await details.click()
@@ -151,7 +150,7 @@ describe('the cleanup movie', () => {
   test('a cleanup that never started ends on why, not on a celebration', async () => {
     gsap.globalTimeline.timeScale(4)
     const never = movieDb([
-      {type: 'waiting', data: {}},
+      cleanupEvents[0],
       {type: 'abandoned', data: {reason: 'clean was never run after the approval'}},
     ])
     const screen = await render(<Movie db={never} />)
@@ -201,11 +200,12 @@ describe('the cleanup movie', () => {
 
   test('waiting for Claude only animates compositor properties', async () => {
     const source = Object.assign(new EventTarget(), {readyState: 1, close: () => {}})
-    const approved = selected.map(i => i.path)
-    const screen = await render(<App loaded={{...fixture, approved, openEvents: () => source}} history={at()} />)
-    source.dispatchEvent(new MessageEvent('waiting', {data: '{}'}))
-    await expect.element(screen.getByText('Claude is showing the commands', {exact: false}).first()).toBeInTheDocument()
-    const animated = document.getAnimations().flatMap(a => (a.effect instanceof KeyframeEffect ? a.effect.getKeyframes().flatMap(Object.keys) : []))
+    const screen = await render(<App loaded={{...fixture, openEvents: () => source}} history={at()} />)
+    const approved = approvedEvent(selected.map(i => i.path))
+    source.dispatchEvent(new MessageEvent(approved.type, {data: JSON.stringify(approved.data)}))
+    await expect.element(screen.getByText('waiting for Claude to run it', {exact: false}).first()).toBeInTheDocument()
+    const looping = document.getAnimations().filter(a => a.effect?.getTiming().iterations === Infinity)
+    const animated = looping.flatMap(a => (a.effect instanceof KeyframeEffect ? a.effect.getKeyframes().flatMap(Object.keys) : []))
     const painted = animated.filter(p => !['offset', 'computedOffset', 'easing', 'composite', 'opacity', 'transform'].includes(p))
     expect(animated).toContain('opacity')
     expect(painted).toEqual([])

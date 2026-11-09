@@ -389,7 +389,7 @@ describe('the command palette', () => {
     await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: 'Undo'})).toBeEnabled()
     await expect.element(screen.getByRole('dialog')).not.toBeInTheDocument()
     await userEvent.keyboard(MOD_K.macos)
-    await expect.element(option(screen, /^Delete/)).not.toBeInTheDocument()
+    await expect.element(option(screen, /^Delete 4 items immediately/)).toBeVisible()
     await option(screen, /^Cleanup…/).click()
     await expect.element(option(screen, /^Undo this cleanup/)).toBeVisible()
     await expect.element(option(screen, /^Empty these from Trash…/)).toBeVisible()
