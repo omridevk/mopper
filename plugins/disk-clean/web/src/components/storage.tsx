@@ -280,11 +280,17 @@ function storageDefinition(
   })
 }
 
+function useDrawn(paths: Iterable<string>, flat: ReturnType<typeof flatten> | null) {
+  const key = flat ? [...paths].filter(path => flat.byPath.has(path)).sort().join('\0') : ''
+  return useMemo(() => new Set(key === '' ? [] : key.split('\0')), [key])
+}
+
 function useStorageDefinition(flat: ReturnType<typeof flatten> | null, tree: TreeNode | null, shape: Shape, focus: string, cleanable: Set<string>) {
   const scene = useRef<ChartScene | null>(null)
   const {rowSelection} = useSelection()
-  const selected = useMemo(() => new Set(Object.keys(rowSelection).filter(path => rowSelection[path] === true)), [rowSelection])
-  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, cleanable, selected, scene) : null), [flat, tree, shape, focus, cleanable, selected])
+  const selected = useDrawn(Object.keys(rowSelection).filter(path => rowSelection[path] === true), flat)
+  const outlined = useDrawn(cleanable, flat)
+  const definition = useMemo(() => (flat && tree ? storageDefinition(flat, tree, shape, focus, outlined, selected, scene) : null), [flat, tree, shape, focus, outlined, selected])
   const onRender = ({scene: rendered}: {scene: ChartScene}) => {
     scene.current = rendered
   }
@@ -369,6 +375,12 @@ function chainOf(parents: Map<string, TreeNode>, focus: TreeNode) {
   return chain
 }
 
+function useSnapshot(tree: TreeNode | null, walked: boolean) {
+  const [seen, setSeen] = useState({tree, count: 0})
+  if (!walked && seen.tree !== tree) setSeen({tree, count: seen.count + 1})
+  return walked ? 'walked' : `growing ${seen.count}`
+}
+
 export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const {data, tree, walked, cleanable} = useStorageData()
   const home = useHome()
@@ -380,6 +392,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
   const navigate = useNavigate()
   const [hover, setHover] = useState<TreeNode | null>(null)
   const {definition, onRender} = useStorageDefinition(flat, tree, shape, focus, cleanable)
+  const snapshot = useSnapshot(tree, walked)
   const reshape = (next: Shape) => navigate({to: '.', search: prev => ({...prev, shape: next})})
 
   if (!tree || !flat || !definition) {
@@ -407,6 +420,7 @@ export function Storage({shape, zoom}: {shape: Shape; zoom: string}) {
         <ChartBoundary resetKey={`${shape}:${focus}`}>
           <div className="storage-chart" data-hovering={hover !== null}>
             <Chart
+              key={snapshot}
               definition={definition}
               renderer={renderer}
               height={shape === 'sunburst' ? 520 : 480}
