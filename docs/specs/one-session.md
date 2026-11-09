@@ -42,7 +42,10 @@ delete-while-scanning.md landed) and built as part B of scan-speed-rounds-full-m
   directory exists, so Claude can start `wait` right away. It holds `RUN_DIR/session.lock` for its
   whole life and writes `RUN_DIR/session.json` (`{port, token, pid}`, owner-only); a second
   `review` of the same run directory exits 4. The page's cleanup stream is `GET
-  /clean-events?token=..`, the tail of `clean.events`; `/events` stays the scan stream.
+  /clean-events?token=..`, the tail of `clean.events`, which sends a `replayed` marker once the
+  existing log is read (a reloaded page waits for it before it decides whether a deep link to the
+  Empty or confirm dialog still applies); `/events` stays the scan stream and ends with `closed`
+  when the session stops.
 - **Approval never cancels the scan.** The walk keeps listing. Paths already approved, trashed or
   removed are never listed again, nor anything inside them: while a decision is queued or running
   every path in it is held back, and once it finished every approved path that is gone from disk
@@ -79,7 +82,10 @@ delete-while-scanning.md landed) and built as part B of scan-speed-rounds-full-m
   so the moved rows leave the list, the totals and the disk numbers update, every other row is
   selectable again, and the user can select and delete again, any number of rounds. Undo sends the
   restored rows back. The page locks only while a round waits, is queued or runs (and while an Undo
-  or Empty runs); Rescan is refused (409) while a decision is unfinished.
+  or Empty runs); Rescan is refused (409) while a decision is unfinished. Events of a later decision
+  that arrive while a round runs are held until that round settles, so each round's progress,
+  footer and movie stay its own. Between rounds the action bar shows the last result ("Last
+  cleanup") with its Undo and Empty next to the new selection.
 - **The session never ends on its own.** No approval timeout, no exit on tab close, no exit when the
   scan finds nothing. It runs until Claude stops it with `disk-clean stop RUN_DIR` (POST `/stop`
   with the session token, local only), when the user asks or says they're done; `review` then
