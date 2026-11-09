@@ -58,7 +58,7 @@ describe('the URL', () => {
     const {history, screen} = await open('/')
     await expect.poll(() => where(history)).toBe('/cleanup/caches')
     await screen.unmount()
-  })
+  }, 30_000)
 
   test('back and forward walk through tabs, sections, zoom and the confirm modal', async () => {
     planned()

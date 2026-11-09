@@ -1,8 +1,9 @@
 import {Profiler} from 'react'
-import {describe, expect, test} from 'vitest'
+import {afterEach, describe, expect, test, vi} from 'vitest'
 import {render} from 'vitest-browser-react'
 import {App} from './App'
 import type {Loaded} from './lib/data'
+import {clickRescan, finishedBigScan, firstEventsOfRescan, pinDrawnFolder, selectAndDeselect, watchLongTasks} from './test/big-scan'
 import {approvedEvent, at, bigSection, withSection} from './test/fixture'
 import './index.css'
 
@@ -19,6 +20,7 @@ const FLAT_FACTOR = 3
 const FLAT_SLACK = 4
 const DEBOUNCED = 400
 const BROWSER = navigator.userAgent.includes('Firefox') ? 'firefox' : 'chromium'
+const LONGEST_TASK = 100
 
 type Work = Record<string, number>
 
@@ -340,4 +342,31 @@ describe('one change at 10,000 rows', () => {
       }
     }
   }, 180_000)
+})
+
+describe.runIf(BROWSER === 'chromium')('a 2,129-folder storage map', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function longest(tasks: readonly number[], what: string) {
+    console.log(`${BROWSER} ${what}: long tasks ${JSON.stringify(tasks.map(Math.round))} ms`)
+    return Math.max(0, ...tasks)
+  }
+
+  test.each(['/cleanup', '/storage'])('Rescan on %s blocks the page for no long task, at the click or in the first events of the new scan', async url => {
+    const scan = await finishedBigScan(url)
+    const watch = watchLongTasks()
+    await clickRescan(scan)
+    await firstEventsOfRescan(scan)
+    watch.stop()
+    expect(longest(watch.tasks, `rescan on ${url}`)).toBeLessThan(LONGEST_TASK)
+  })
+
+  test('Select for delete and back on the map blocks the page for no long task', async () => {
+    const scan = await finishedBigScan('/storage')
+    const pin = await pinDrawnFolder(scan)
+    const watch = watchLongTasks()
+    await selectAndDeselect(pin)
+    watch.stop()
+    expect(longest(watch.tasks, 'select for delete on the map')).toBeLessThan(LONGEST_TASK)
+  })
 })
