@@ -1,7 +1,7 @@
 import {useHotkeys, type Hotkey} from '@tanstack/react-hotkeys'
 import {useNavigate} from '@tanstack/react-router'
-import {Eraser, Info, RotateCcw, Trash2, X} from 'lucide-react'
-import {createContext, use, useState, type AnimationEvent, type ReactNode, type RefObject} from 'react'
+import {Eraser, Info, RotateCcw, Trash2} from 'lucide-react'
+import {createContext, use, useState, type ReactNode, type RefObject} from 'react'
 import {Button} from '@/components/ui/button'
 import {Kbd} from '@/components/ui/kbd'
 import {Popover, PopoverContent, PopoverTitle, PopoverTrigger} from '@/components/ui/popover'
@@ -9,73 +9,16 @@ import {Tooltip, TooltipContent, TooltipTrigger} from '@/components/ui/tooltip'
 import {bindingsOf, HOTKEY_OPTIONS, type Command} from '@/lib/commands'
 import type {CleanupProgress, Phase} from '@/lib/progress'
 import {formatBytes, plural, sizeOf} from '@/lib/data'
-import {cssMs, useReducedMotion} from '@/lib/motion'
 import {useDb} from '@/lib/db'
 import {firstSectionNow, type Selection} from '@/lib/page-data'
 import {usePlatform} from '@/lib/platform'
 import type {ScanState} from '@/lib/scan-feed'
 import {ProgressFooter} from './cleanup-progress'
 import {PopBytes} from './numbers'
-import FuseButton from './react-bits/fuse-button'
 import {useSelectionWarnings, WarningChip} from './selection-warnings'
 
-function UndoCountdown({ms}: {ms: number}) {
-  const steps = Math.ceil(ms / 1000)
-  const [left, setLeft] = useState(steps)
-  const tick = (event: AnimationEvent<HTMLSpanElement>) => setLeft(Math.max(0, steps - Math.round(event.elapsedTime)))
-  return (
-    <span
-      className="t-clock"
-      style={{animationDuration: '1000ms', animationIterationCount: steps, animationDelay: `${ms - steps * 1000}ms`}}
-      onAnimationIteration={tick}
-      onAnimationEnd={() => setLeft(0)}
-    >
-      Undo ({left}s)
-    </span>
-  )
-}
-
-function undoLabel(reduced: boolean, armed: boolean, ms: number) {
-  if (!reduced) return 'Undo'
-  return armed ? <UndoCountdown ms={ms} /> : `Undo (${Math.ceil(ms / 1000)}s)`
-}
-
-interface FuseAction {
-  label: string
-  doneLabel: string
-  icon: ReactNode
-  background: string
-  color: string
-  onCommit: () => void
-}
-
-function FuseAction({label, doneLabel, icon, background, color, onCommit}: FuseAction) {
-  const reduced = useReducedMotion()
-  const undoWindow = cssMs('--fuse-window', 4000)
-  const [armed, setArmed] = useState(false)
-  return (
-    <FuseButton
-      label={label}
-      undoLabel={undoLabel(reduced, armed, undoWindow)}
-      doneLabel={doneLabel}
-      icon={icon}
-      size="sm"
-      radius={8}
-      className="shrink-0"
-      background={background}
-      color={color}
-      fuseColor={reduced ? 'transparent' : '#ef4444'}
-      fuseThickness={2}
-      undoWindow={undoWindow}
-      commitOn="fuseEnd"
-      onCommit={onCommit}
-      onPhaseChange={phase => setArmed(phase === 'armed')}
-    />
-  )
-}
-
 function hint(scan: ScanState) {
-  return !scan.done && scan.error === '' ? 'You can delete what is listed while the scan runs.' : 'Cancel gives you a few seconds to undo.'
+  return !scan.done && scan.error === '' ? 'You can delete what is listed while the scan runs.' : 'Delete as many times as you like; End session (top right) closes this page for deleting.'
 }
 
 export const DELETE: Hotkey = 'Mod+Backspace'
@@ -105,6 +48,34 @@ function HelpLine({scan, about, onAbout}: {scan: ScanState; about: boolean; onAb
   )
 }
 
+export function EndSession({onEnd, disabled}: {onEnd: () => void; disabled: boolean}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger disabled={disabled} render={<Button variant="ghost" size="sm" className="shrink-0" />}>End session…</PopoverTrigger>
+      <PopoverContent side="bottom" align="end" className="flex w-72 flex-col gap-3 text-xs">
+        <PopoverTitle className="text-sm">End this session?</PopoverTitle>
+        <p className="text-muted-foreground">Nothing more can be deleted from this page. What is already in the Trash keeps its Undo in the Trash tab.</p>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
+            Keep going
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => {
+              setOpen(false)
+              onEnd()
+            }}
+          >
+            End session
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 export function deleteState(selection: Selection, scan: ScanState) {
   const count = selection.selected.length
   if (scan.error !== '') return {label: 'The scan failed · nothing can be deleted', ready: false}
@@ -114,14 +85,15 @@ export function deleteState(selection: Selection, scan: ScanState) {
   return {label: 'Nothing found to delete', ready: false}
 }
 
-function SelectionButton({label, icon, hotkey, reason, onClick}: {label: string; icon: ReactNode; hotkey: Hotkey; reason: string; onClick: () => void}) {
+function SelectionButton({label, short, icon, hotkey, reason, onClick}: {label: string; short: string; icon: ReactNode; hotkey: Hotkey; reason: string; onClick: () => void}) {
   const keys = usePlatform()
   const described = reason ? `${label}: ${reason}` : label
   return (
     <Tooltip>
       <TooltipTrigger delay={80} render={<span className="inline-flex" />}>
-        <Button variant="ghost" size="icon-xs" disabled={reason !== ''} aria-label={described} onClick={onClick}>
+        <Button variant="ghost" size="xs" disabled={reason !== ''} aria-label={described} onClick={onClick}>
           {icon}
+          {short}
         </Button>
       </TooltipTrigger>
       <TooltipContent>
@@ -155,7 +127,6 @@ export function ActionBar({
   failure,
   about,
   onAbout,
-  onCancel,
   onDelete,
 }: {
   selection: Selection
@@ -167,7 +138,6 @@ export function ActionBar({
   failure?: ReactNode
   about: boolean
   onAbout: (open: boolean) => void
-  onCancel: () => void
   onDelete: (now: boolean) => void
 }) {
   const warnings = useSelectionWarnings(selection)
@@ -183,8 +153,8 @@ export function ActionBar({
           <div className="w-64 shrink-0 truncate text-sm font-semibold tabular-nums">
             {plural(count, 'item', 'items')} selected · {selection.exactBytes === 0 && selection.apparentBytes > 0 ? `≈${formatBytes(selection.apparentBytes)}` : <PopBytes bytes={selection.exactBytes} />}
           </div>
-          <SelectionButton label="Clear selection" icon={<Eraser />} hotkey="D" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
-          <SelectionButton label="Reset to recommended" icon={<RotateCcw />} hotkey="R" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
+          <SelectionButton label="Clear selection" short="Clear" icon={<Eraser className="max-xl:hidden" />} hotkey="D" reason={count === 0 ? 'nothing is selected' : ''} onClick={selection.clear} />
+          <SelectionButton label="Reset to recommended" short="Reset" icon={<RotateCcw className="max-xl:hidden" />} hotkey="R" reason={selection.recommended ? 'already the recommended selection' : ''} onClick={selection.reset} />
           <div className="flex min-w-0 grow pl-2">
             <WarningChip warnings={warnings} />
           </div>
@@ -193,7 +163,6 @@ export function ActionBar({
         {failure}
       </div>
       {last && actions}
-      <FuseAction label="Cancel" doneLabel="Cancelling" icon={<X />} background="transparent" color="var(--foreground)" onCommit={onCancel} />
       <Tooltip>
         <TooltipTrigger delay={80} render={<span className="inline-flex shrink-0" />}>
           <Button variant="outline" size="lg" disabled={!action.ready} aria-haspopup="dialog" onClick={() => onDelete(true)}>

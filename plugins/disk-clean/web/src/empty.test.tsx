@@ -264,7 +264,7 @@ describe('the action bar and toolbar fit on one line at every width', () => {
       const help = screen.getByText('Delete moves files to the Trash, so you can undo').element()
       if (!(help instanceof HTMLElement)) throw new Error('no help line')
       expect(help.scrollWidth).toBeLessThanOrEqual(help.clientWidth)
-      expect(help.getBoundingClientRect().right).toBeLessThanOrEqual(screen.getByRole('button', {name: 'Cancel'}).element().getBoundingClientRect().left)
+      expect(help.getBoundingClientRect().right).toBeLessThanOrEqual(screen.getByRole('button', {name: 'Delete immediately…'}).element().getBoundingClientRect().left)
       expect(screen.getByRole('contentinfo').element().getBoundingClientRect().height).toBe(bar)
       await shot(`10-action-bar-${width}`)
 

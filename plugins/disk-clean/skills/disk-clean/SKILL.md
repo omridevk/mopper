@@ -128,8 +128,9 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   for good. Its confirm says "can't be undone", gives the exact counts and bytes, its button names
   the action ("Delete N items immediately · X"), and focus starts on Cancel. Nothing deleted this
   way is recorded or undoable.
-- **Cancel** (stop the scan and delete nothing more) still has a few-second undo window. It wakes
-  you with `ended:`; then close the session with `stop`.
+- **End session…** (header, top right; stop the scan and delete nothing more) asks first: "Keep
+  going" changes nothing, "End session" ends it. It wakes you with `ended:`; then close the session
+  with `stop`. Clearing a selection is the footer's "Clear selection" button, not this.
 - After approval the page stays on the review app and locks the list while the round waits, is
   queued or runs. One phase drives the header line, the hero, the counter row, the status line and
   the summary, so they always agree: "Approved · waiting for Claude to run it" (you are showing the
@@ -170,7 +171,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts
   dry run, run it (stage 3, always with `--decision N`), report the result, then start `wait` again.
 - `page: ...`, exit `0`: the user ran Undo or Empty in the page; the line is its result. Tell the
   user, then start `wait` again.
-- `ended: ...`, exit `5`: the user pressed Cancel in the page. Run `stop`.
+- `ended: ...`, exit `5`: the user pressed End session in the page. Run `stop`.
 - `stopped: ...`, exit `3`: the session is closed. Do not start `wait` again.
 
 Approvals made while a cleanup runs queue and run in order. The session never ends on its own:

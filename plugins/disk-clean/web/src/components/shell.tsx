@@ -12,7 +12,7 @@ import {usePlatform} from '@/lib/platform'
 import {heroBytes, type CleanupProgress, type Phase} from '@/lib/progress'
 import {CLEANUP_DEFAULTS} from '@/lib/search'
 import {useDisk, usePending, useScanState, useSession} from '@/lib/views'
-import {ActionBar, deleteState, TableDelete, useOpenConfirm} from './action-bar'
+import {ActionBar, deleteState, EndSession, TableDelete, useOpenConfirm} from './action-bar'
 import {ListingContext, useListChange, useListing} from './cleanup'
 import {BarText, CleanupCounter, CleanupStatus, CleanupTracker, DetailsButton, ProgressTrack, RoundResult, TrashActions, trashOffer} from './cleanup-progress'
 import {CommandMenu} from './command-menu'
@@ -102,6 +102,8 @@ function Header({
   link,
   onDetails,
   detailsRef,
+  onEnd,
+  ending,
 }: {
   items: number
   progress: CleanupProgress | null
@@ -109,6 +111,7 @@ function Header({
   link: StreamLink
   onDetails: () => void
   detailsRef: RefObject<HTMLButtonElement | null>
+  onEnd: () => void; ending: boolean
 }) {
   return (
     <header className="relative flex items-center gap-4 border-b px-7 py-4">
@@ -120,6 +123,7 @@ function Header({
         <Status items={items} progress={progress} phase={phase} link={link} />
       </div>
       {progress && <DetailsButton ref={detailsRef} onClick={onDetails} />}
+      <EndSession onEnd={onEnd} disabled={ending} />
       <Tabs />
       {progress && <ProgressTrack progress={progress} phase={phase} />}
     </header>
@@ -264,7 +268,7 @@ export function Shell() {
   return (
     <div className="flex h-svh flex-col">
       <Tracker db={db} progress={progress} phase={phase} returnFocus={detailsRef} actions={cleanupTrash.actions} />
-      <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={onDetails} detailsRef={detailsRef} />
+      <Header items={selection.count} progress={progress} phase={phase} link={session.scanLink} onDetails={onDetails} detailsRef={detailsRef} onEnd={decisions.cancel} ending={active} />
       <ScanSummary db={db} scan={scan} selection={selection} progress={round} phase={round ? phase : idle} active={active} />
       <div className="relative flex min-h-0 flex-1 flex-col text-sm">
         <TableDelete value={leaves.find(command => command.scoped) ?? null}>
@@ -285,7 +289,6 @@ export function Shell() {
         failure={<Failures db={db} onApprove={decisions.retry} onCancel={decisions.cancel} />}
         about={about}
         onAbout={setAbout}
-        onCancel={decisions.cancel}
         onDelete={openConfirm}
       />
       <CommandMenu commands={commands} shortcuts={shortcuts} onShortcuts={setShortcuts} />

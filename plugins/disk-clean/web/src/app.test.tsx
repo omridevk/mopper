@@ -359,8 +359,6 @@ const SHOWN = {visibility: 'visible'}
 const DELETE = /^Delete \d+ items? · /
 
 describe('live page', () => {
-  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
-  afterEach(() => document.documentElement.style.removeProperty('--fuse-window'))
 
   test('streams items during the walk, reveals storage on walked, Delete stays live while scanning and undoes an approve', async () => {
     const {source, send} = fakeEventSource()
@@ -479,9 +477,7 @@ function settle(ms: number) {
 }
 
 describe('effects', () => {
-  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
   afterEach(async () => {
-    document.documentElement.style.removeProperty('--fuse-window')
     vi.restoreAllMocks()
     await emulateReducedMotion('no-preference')
   })
@@ -557,11 +553,9 @@ async function approveInApp() {
 
 describe('cleanup in the app', () => {
   beforeEach(() => {
-    document.documentElement.style.setProperty('--fuse-window', '300ms')
     gsap.globalTimeline.timeScale(20)
   })
   afterEach(async () => {
-    document.documentElement.style.removeProperty('--fuse-window')
     gsap.globalTimeline.timeScale(1)
     vi.restoreAllMocks()
     await emulateReducedMotion('no-preference')
@@ -570,7 +564,8 @@ describe('cleanup in the app', () => {
   test('approve hands back to Claude, then the bar, list and panel follow the real deletion', async () => {
     const {screen, source} = await approveInApp()
     sendRaw(source, 'done', {reclaimable: 7 * GB, elapsed_ms: 9500})
-    for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
+    for (const name of [DELETE, 'Rescan']) await expect.element(screen.getByRole('button', {name})).not.toBeInTheDocument()
+    await expect.element(screen.getByRole('button', {name: 'End session…'})).toBeDisabled()
     await expect.element(screen.getByText('Approved: the cleanup runs in the background')).toBeVisible()
     await expect.element(screen.getByRole('checkbox', {name: 'Select all in Application caches'})).toBeDisabled()
     await expect.element(screen.getByText('Selected to free')).not.toBeInTheDocument()
@@ -594,7 +589,7 @@ describe('cleanup in the app', () => {
     const last = screen.getByRole('region', {name: 'Last cleanup'})
     await expect.element(last).toMatchTextContent(/^Cleanup finished · Freed 3\.5 GB · 4 items · 3\.8 GB approved/)
     await expect.element(last.getByText('still present after removal: permission denied', {exact: false})).toBeVisible()
-    for (const name of [DELETE, 'Cancel', 'Rescan']) await expect.element(screen.getByRole('button', {name})).toBeInTheDocument()
+    for (const name of [DELETE, 'End session…', 'Rescan']) await expect.element(screen.getByRole('button', {name})).toBeInTheDocument()
     expect(source.readyState, 'stays open: the next round, Undo, Empty and the Trash record can still change').toBe(1)
 
     await details(screen).click()
@@ -819,22 +814,20 @@ describe('cleanup in the app', () => {
   })
 })
 
-describe('cancel', () => {
-  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
-  afterEach(() => {
-    document.documentElement.style.removeProperty('--fuse-window')
-    vi.restoreAllMocks()
-  })
+describe('end session', () => {
+  afterEach(() => vi.restoreAllMocks())
 
-  test('cancel has an undo window, and only a burnt-out fuse cancels', async () => {
+  test('the footer has no session-ending button; End session asks first, and Keep going changes nothing', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(new Response('{}'))
     const screen = await render(<App loaded={fixture} history={at()} />)
-    const cancel = screen.getByRole('button', {name: 'Cancel'})
-    await cancel.click()
-    await screen.getByRole('button', {name: 'Undo'}).click()
-    await expect.element(cancel).toHaveStyle(SHOWN)
+    await expect.element(screen.getByRole('contentinfo').getByRole('button', {name: 'Clear selection'})).toBeVisible()
+    expect(screen.getByRole('contentinfo').getByRole('button', {name: /cancel|end session/i}).elements()).toHaveLength(0)
+    await screen.getByRole('button', {name: 'End session…'}).click()
+    await screen.getByRole('button', {name: 'Keep going'}).click()
+    await expect.element(screen.getByRole('button', {name: 'Keep going'})).not.toBeInTheDocument()
     expect(window.fetch).not.toHaveBeenCalled()
-    await cancel.click()
+    await screen.getByRole('button', {name: 'End session…'}).click()
+    await screen.getByRole('button', {name: 'End session', exact: true}).click()
     await expect.element(screen.getByRole('heading', {name: 'Cancelled'})).toBeVisible()
     expect(window.fetch).toHaveBeenCalledWith('/decide', expect.objectContaining({body: expect.stringContaining('"decision":"cancel"')}))
   })
@@ -880,9 +873,7 @@ const NAMES: Loaded = {
 }
 
 describe('list fixes from QA', () => {
-  beforeEach(() => document.documentElement.style.setProperty('--fuse-window', '300ms'))
   afterEach(async () => {
-    document.documentElement.style.removeProperty('--fuse-window')
     vi.restoreAllMocks()
     await page.viewport(1440, 960)
   })
@@ -901,7 +892,7 @@ describe('list fixes from QA', () => {
   test('REV-4: at 1024 px the footer buttons keep their full label and icon', async () => {
     await page.viewport(1024, 768)
     const screen = await render(<App loaded={fixture} history={at()} />)
-    for (const name of ['Cancel', DELETE]) {
+    for (const name of [DELETE]) {
       const button = screen.getByRole('button', {name}).element()
       expect(button.scrollWidth, String(name)).toBeLessThanOrEqual(button.clientWidth + 1)
       expect(button.querySelector('svg')?.getBoundingClientRect().width, String(name)).toBeGreaterThanOrEqual(14)

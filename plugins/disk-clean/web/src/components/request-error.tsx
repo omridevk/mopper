@@ -5,7 +5,7 @@ import {useRequest} from '@/lib/views'
 
 const LABEL: Record<Action, string> = {
   approve: 'Delete did not go through, nothing was deleted',
-  cancel: 'Cancel did not go through',
+  cancel: 'End session did not go through',
   undo: 'Undo did not go through',
   empty: 'Empty did not go through',
   rescan: 'Rescan did not start',
