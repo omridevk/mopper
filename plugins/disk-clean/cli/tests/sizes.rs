@@ -249,7 +249,7 @@ type Rows = Vec<(String, u64, u64, i64)>;
 
 fn rows_of<'a>(map: impl IntoIterator<Item = walk::Open<'a>>) -> Rows {
     map.into_iter()
-        .map(|(p, b, f, m)| (p.display().to_string(), b, f, m))
+        .map(|(p, b, f, m)| (disk_clean::platform::path_text(p).unwrap(), b, f, m))
         .collect()
 }
 
@@ -283,7 +283,7 @@ fn growing_snapshots_are_connected_and_only_grow() {
         .unwrap()
         .as_secs() as i64;
     let days = disk_clean::insights::midnights(now);
-    let home = root.display().to_string();
+    let home = disk_clean::platform::path_text(&root).unwrap();
     let plan = walk::Plan {
         home: root.clone(),
         map_depth: Some(4),

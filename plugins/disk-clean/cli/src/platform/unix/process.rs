@@ -6,6 +6,7 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 
 const LOCK_FD: &str = "DISK_CLEAN_LOCK_FD";
+pub const LOCK_INHERITS: bool = true;
 
 pub fn which(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {

@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{HSTRING, w};
 
-const LOCK_HANDLE: &str = "DISK_CLEAN_LOCK_HANDLE";
+pub const LOCK_INHERITS: bool = false;
 const SHELL_EXECUTE_OK: isize = 32;
 
 pub fn utility_qos() {
@@ -82,17 +82,6 @@ fn set_inherit(handle: RawHandle, on: bool) {
     let _ = unsafe { SetHandleInformation(HANDLE(handle), HANDLE_FLAG_INHERIT.0, flags) };
 }
 
-pub fn pass_lock(cmd: &mut Command, lock: &fs::File) {
-    let handle = lock.as_raw_handle();
-    set_inherit(handle, true);
-    cmd.env(LOCK_HANDLE, (handle as usize).to_string());
-}
+pub fn pass_lock(_: &mut Command, _: &fs::File) {}
 
-pub fn keep_lock_from_commands() {
-    if let Some(handle) = std::env::var(LOCK_HANDLE)
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-    {
-        set_inherit(handle as RawHandle, false);
-    }
-}
+pub fn keep_lock_from_commands() {}

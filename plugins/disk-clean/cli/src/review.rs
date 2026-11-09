@@ -1405,9 +1405,10 @@ mod tests {
         let (_, len, replay) = backlog(&live);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(len, 3, "{replay}");
-        assert!(replay.contains(&format!("\"{}\"", text(&kept))));
-        assert!(replay.contains(&text(&kept.join("x"))));
-        assert!(replay.contains(&text(&dir.join("gone-too"))));
+        let quoted = |p: &Path| json!(text(p)).to_string();
+        assert!(replay.contains(&quoted(&kept)));
+        assert!(replay.contains(&quoted(&kept.join("x"))));
+        assert!(replay.contains(&quoted(&dir.join("gone-too"))));
         assert!(live.unfinished(), "decision 2 waits for Claude");
     }
 }

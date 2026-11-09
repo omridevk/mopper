@@ -511,8 +511,14 @@ pub fn queue(run_dir: &str, decision: Option<u64>, dry_run: bool) -> io::Result<
         .stdout(log.try_clone()?)
         .stderr(log);
     platform::pass_lock(&mut cmd, &own);
-    let child = platform::spawn_detached(&mut cmd)?;
+    let mut child = platform::spawn_detached(&mut cmd)?;
     let pid = child.id();
+    if !platform::LOCK_INHERITS {
+        drop(own);
+        while lock_is_free(&work.join(LOCK)) && matches!(child.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     fs::write(work.join("worker.pid"), format!("{pid}\n"))?;
 
     println!("decision: {n}");
@@ -803,6 +809,15 @@ pub fn worker(run_dir: &str, decision: Option<u64>) -> io::Result<i32> {
     };
     let work = decision_dir(dir, n);
     fs::create_dir_all(&work)?;
+    let _own = if platform::LOCK_INHERITS {
+        None
+    } else {
+        let Some(own) = try_lock(&work.join(LOCK), LOCK_TRIES)? else {
+            println!("decision {n} is already queued or running");
+            return Ok(0);
+        };
+        Some(own)
+    };
     let events = Events::round(dir, n);
     let _turn = wait_for_turn(dir, n, &events)?;
     fs::write(work.join(STATUS), "pending\n")?;
