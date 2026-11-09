@@ -455,11 +455,7 @@ pub fn check_repos(
     let real = real_cwds(&platform::process_cwds());
     let done: Mutex<Vec<(usize, Vec<Checked>)>> = Mutex::new(Vec::new());
     let threads = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).max(2));
-    let Ok(pool) = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .start_handler(|_| platform::utility_qos())
-        .build()
-    else {
+    let Ok(pool) = rayon::ThreadPoolBuilder::new().num_threads(threads).build() else {
         return Vec::new();
     };
     pool.in_place_scope(|s| {

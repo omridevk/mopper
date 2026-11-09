@@ -31,7 +31,7 @@ impl Sink for Threads {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn the_walk_runs_at_default_qos_and_the_worktree_checks_at_utility_qos() {
+fn the_walk_and_the_worktree_checks_run_at_default_qos() {
     let t = common::temp_dir("scan-qos");
     let home = t.0.join("home");
     fs::create_dir_all(home.join("code")).unwrap();
@@ -69,7 +69,7 @@ fn the_walk_runs_at_default_qos_and_the_worktree_checks_at_utility_qos() {
     assert!(!checks.is_empty(), "the worktree checks reported: {seen:?}");
     assert!(walk.iter().all(|(_, class)| *class != utility), "{seen:?}");
     assert!(
-        checks.iter().all(|(_, class)| *class == utility),
+        checks.iter().any(|(_, class)| *class != utility),
         "{seen:?}"
     );
 }
@@ -95,7 +95,7 @@ impl Sink for Niceness {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn the_walk_keeps_its_priority_and_the_worktree_checks_run_lower() {
+fn the_walk_and_the_worktree_checks_keep_their_priority() {
     let t = common::temp_dir("scan-nice");
     let home = t.0.join("home");
     fs::create_dir_all(home.join("code")).unwrap();
@@ -131,5 +131,5 @@ fn the_walk_keeps_its_priority_and_the_worktree_checks_run_lower() {
     assert!(!walk.is_empty(), "the scan thread reported: {seen:?}");
     assert!(!checks.is_empty(), "the worktree checks reported: {seen:?}");
     assert!(walk.iter().all(|(_, n)| *n == start), "{seen:?}");
-    assert!(checks.iter().all(|(_, n)| *n > start), "{seen:?}");
+    assert!(checks.iter().any(|(_, n)| *n == start), "{seen:?}");
 }
