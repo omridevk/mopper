@@ -917,6 +917,50 @@ describe('list fixes from QA', () => {
     await expect.element(screen.getByRole('link', {name: /^node_modules/})).not.toBeInTheDocument()
   })
 
+  test('a partly selected section card shows the selected bytes of its total, and only the total when all or none is selected', async () => {
+    const screen = await render(<App loaded={fixture} history={at()} />)
+    const caches = screen.getByRole('link', {name: /^Application caches/})
+    await expect.element(caches).toHaveTextContent('Application caches3.8 GB4/4')
+    await screen.getByRole('checkbox', {name: '~/Library/Caches/app-a'}).click()
+    await expect.element(caches).toHaveTextContent('Application caches1.8 GB of 3.8 GB3/4')
+    await screen.getByRole('checkbox', {name: 'Select all in Application caches'}).click()
+    await expect.element(caches).toHaveTextContent('Application caches3.8 GB4/4')
+    await screen.getByRole('checkbox', {name: 'Select all in Application caches'}).click()
+    await expect.element(caches).toHaveTextContent('Application caches3.8 GB0/4')
+  })
+
+  test('a partly selected card marks apparent bytes with ≈ and fits the sidebar at 1024 px', async () => {
+    await page.viewport(1024, 800)
+    const title = 'Git worktrees with no leftover work and their clones'
+    const loaded: Loaded = {
+      ...fixture,
+      data: {
+        ...fixture.data,
+        categories: [
+          category('worktrees', title, 'safe', [
+            item('/Users/you/code/wt-a', 3 * GB, {action: 'worktree', label: '~/code/wt-a', accuracy: 'apparent', preselect: false}),
+            item('/Users/you/code/wt-b', GB, {action: 'worktree', label: '~/code/wt-b'}),
+            item('/Users/you/code/wt-c', 25 * 1024 ** 2, {action: 'worktree', label: '~/code/wt-c', preselect: false}),
+          ]),
+        ],
+      },
+    }
+    const screen = await render(<App loaded={loaded} history={at()} />)
+    const card = screen.getByRole('link', {name: new RegExp(`^${title}`)})
+    const sections = screen.getByRole('navigation', {name: 'Sections'}).element()
+    const box = (text: string) => card.getByText(text, {exact: true}).element().getBoundingClientRect()
+    await expect.element(card).toHaveTextContent(`${title}1.0 GB of 4.0 GB1/3`)
+    expect(box(title).right).toBeLessThanOrEqual(box('1.0 GB of 4.0 GB').left)
+    await screen.getByRole('checkbox', {name: '~/code/wt-b'}).click()
+    await screen.getByRole('checkbox', {name: '~/code/wt-a'}).click()
+    await expect.element(card).toHaveTextContent(`${title}≈3.0 GB of 4.0 GB1/3`)
+    await screen.getByRole('checkbox', {name: '~/code/wt-c'}).click()
+    await expect.element(card).toHaveTextContent(`${title}25.0 MB + ≈3.0 GB of 4.0 GB2/3`)
+    expect(sections.scrollWidth).toBeLessThanOrEqual(sections.clientWidth)
+    expect(box('25.0 MB + ≈3.0 GB of 4.0 GB').right).toBeLessThanOrEqual(card.element().getBoundingClientRect().right + 0.5)
+    await page.viewport(1440, 960)
+  })
+
   test('REV-7: name sort is natural and ignores case', async () => {
     const screen = await render(<App loaded={NAMES} history={at()} />)
     await screen.getByRole('combobox', {name: 'Sort'}).click()

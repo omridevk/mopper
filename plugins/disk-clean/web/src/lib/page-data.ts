@@ -9,7 +9,7 @@ import {firstSection, isPickable, sumBytes} from './data'
 import {useDb, type Db} from './db'
 import {phaseOf, useCleanupProgress} from './progress'
 import type {CategoryHead, Entry, Nest, ScanState} from './scan-feed'
-import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Picks, type Selector} from './selection'
+import {createSelector, fingerprint, NO_PICKS, picksOf, type Decoded, type Fragment, type Picks, type Selector} from './selection'
 import {useScanState, useSession, useVersion} from './views'
 
 export interface Ending {
@@ -19,6 +19,7 @@ export interface Ending {
 
 export interface Selection {
   picked: ReadonlyMap<string, number>
+  pickedBytes: ReadonlyMap<string, Bytes>
   count: number
   nests: Nest[]
   rowSelection: RowSelectionState
@@ -101,19 +102,39 @@ function rowSelectionNow(db: Db, picks: Picks): RowSelectionState {
   return decodedNow(db, picks).on
 }
 
+export interface Bytes {
+  exact: number
+  apparent: number
+}
+
+function addBytes(into: Map<string, Bytes>, section: string, exact: number, apparent: number) {
+  const known = into.get(section) ?? {exact: 0, apparent: 0}
+  into.set(section, {exact: known.exact + exact, apparent: known.apparent + apparent})
+}
+
 function shadowOf(db: Db, nests: readonly Nest[], on: RowSelectionState) {
-  let exact = 0
-  let apparent = 0
+  const bySection = new Map<string, Bytes>()
   const counted = new Set<string>()
   for (const nest of nests) {
     if (counted.has(nest.inner) || on[nest.outer] !== true || on[nest.inner] !== true) continue
     counted.add(nest.inner)
     const inner = db.scan.items.synced.get(nest.inner)
-    if (inner?.exact) exact += inner.bytes
-    else apparent += inner?.bytes ?? 0
+    if (inner) addBytes(bySection, inner.section, inner.exact ? inner.bytes : 0, inner.exact ? 0 : inner.bytes)
   }
-  return {exact, apparent}
+  return bySection
 }
+
+function pickedBytesOf(parts: readonly Fragment<Entry>[], shadow: ReadonlyMap<string, Bytes>) {
+  const bySection = new Map<string, Bytes>()
+  for (const part of parts) {
+    const section = part.selected[0]?.section ?? ''
+    const hidden = shadow.get(section)
+    addBytes(bySection, section, part.exactBytes - (hidden?.exact ?? 0), part.apparentBytes - (hidden?.apparent ?? 0))
+  }
+  return bySection
+}
+
+const sumOf = (bytes: Iterable<Bytes>) => [...bytes].reduce((sum, part) => ({exact: sum.exact + part.exact, apparent: sum.apparent + part.apparent}), {exact: 0, apparent: 0})
 
 interface Derived {
   selected: Entry[]
@@ -123,22 +144,25 @@ interface Derived {
   risky: number
   sections: number
   picked: ReadonlyMap<string, number>
+  pickedBytes: ReadonlyMap<string, Bytes>
 }
 
 const derivations = new WeakMap<Decoded<Entry>, {nests: number; derived: Derived}>()
 
 function derive(db: Db, decoded: Decoded<Entry>): Derived {
   const nests = [...db.scan.nests.synced.values()]
-  const shadow = shadowOf(db, nests, decoded.on)
   const parts = decoded.parts.filter(part => part.selected.length > 0)
+  const pickedBytes = pickedBytesOf(parts, shadowOf(db, nests, decoded.on))
+  const total = sumOf(pickedBytes.values())
   return {
     selected: parts.flatMap(part => part.selected),
     nests,
-    exactBytes: parts.reduce((sum, part) => sum + part.exactBytes, 0) - shadow.exact,
-    apparentBytes: parts.reduce((sum, part) => sum + part.apparentBytes, 0) - shadow.apparent,
+    exactBytes: total.exact,
+    apparentBytes: total.apparent,
     risky: parts.reduce((sum, part) => sum + (part.risk === 'review' ? part.selected.length : 0), 0),
     sections: parts.length,
     picked: new Map(parts.map(part => [part.selected[0]?.section ?? '', part.selected.length])),
+    pickedBytes,
   }
 }
 

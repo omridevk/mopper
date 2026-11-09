@@ -59,6 +59,8 @@ export interface SectionTotal {
   selectable: number
   aged: number
   picked: number
+  pickedExact: number
+  pickedApparent: number
 }
 
 const UNFILTERED: Shape = {q: '', risk: [], minSize: 0, minAge: -1, sort: 'size-desc', only: false}
@@ -71,14 +73,17 @@ function useKept(shape: Shape, on: RowSelectionState, typed: (text: string) => s
 
 type On = RowSelectionState | null
 
-const emptyTotal = (id: string): SectionTotal => ({id, count: 0, bytes: 0, selectable: 0, aged: 0, picked: 0})
+const emptyTotal = (id: string): SectionTotal => ({id, count: 0, bytes: 0, selectable: 0, aged: 0, picked: 0, pickedExact: 0, pickedApparent: 0})
 
 function addTo(total: SectionTotal, row: Entry, on: On) {
   total.count += 1
   total.bytes += row.bytes
   total.selectable += row.selectable
   total.aged += Number(row.age !== null && row.age !== undefined)
-  total.picked += Number(on !== null && on[row.path] === true)
+  if (on === null || on[row.path] !== true) return
+  total.picked += 1
+  if (row.exact) total.pickedExact += row.bytes
+  else total.pickedApparent += row.bytes
 }
 
 const skipsFor = (keep: Keep, open: SectionTotal | null) => (row: Entry) => row.section === open?.id || (keep !== null && !keep(row))

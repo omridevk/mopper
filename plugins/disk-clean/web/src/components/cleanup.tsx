@@ -10,13 +10,13 @@ import {Input} from '@/components/ui/input'
 import {Kbd} from '@/components/ui/kbd'
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from '@/components/ui/select'
 import {ToggleGroup, ToggleGroupItem} from '@/components/ui/toggle-group'
-import {counted, formatBytes, isPickable, RISK_LABEL, type Risk} from '@/lib/data'
+import {counted, formatBytes, isPickable, RISK_LABEL, sizeOf, type Risk} from '@/lib/data'
 import {useDb, type Db} from '@/lib/db'
 import type {CleanupProgress, Removal} from '@/lib/progress'
 import type {CategoryHead, Entry as Item} from '@/lib/scan-feed'
 import {CLEANUP_DEFAULTS, MIN_AGES, MIN_SIZES, NO_FILTERS, RISKS, SORTS, type CleanupSearch, type Sort, type View} from '@/lib/search'
 import {STATE_MOTION, useReveal} from '@/lib/motion'
-import {useProgress, useSelection, type Selection} from '@/lib/page-data'
+import {useProgress, useSelection, type Bytes, type Selection} from '@/lib/page-data'
 import {usePlatform} from '@/lib/platform'
 import {isFiltering, predicateOf, useShaped, type SectionTotal} from '@/lib/shaping'
 import {useScanState, useSections} from '@/lib/views'
@@ -58,6 +58,7 @@ interface Shown {
   selectable: number
   aged: number
   picked: number
+  pickedBytes: Bytes
 }
 
 export interface Group {
@@ -96,6 +97,11 @@ function pickedLabel({category, shown}: Group, progressed: Progressed | null) {
     return plan ? sectionProgress(progressed.removals.get(category.id), plan.count) : 'not approved'
   }
   return `${counted(shown.picked)}/${counted(shown.selectable)}`
+}
+
+function sizeLabel({category, shown}: Group, progressed: Progressed | null) {
+  const partly = !progressed && category.risk !== 'report' && shown.picked > 0 && shown.picked < shown.selectable
+  return partly ? `${sizeOf(shown.pickedBytes.exact, shown.pickedBytes.apparent)} of ${formatBytes(shown.bytes)}` : formatBytes(shown.bytes)
 }
 
 function SectionCheckbox({group, locked, choose}: {group: Group; locked: boolean; choose: Choose}) {
@@ -188,9 +194,9 @@ function SectionButton({group, first, max, progressed, choose}: {group: Group; f
     <div data-default={first || undefined} className={`flex items-start gap-2.5 rounded-lg border p-2.5 ${STATE_MOTION} ${lit ? 'border-blue-400/35 bg-blue-400/5' : 'border-transparent'} ${OPEN_SECTION}`}>
       <SectionCheckbox group={group} locked={progressed !== null} choose={choose} />
       <SectionLink section={category.id} className="flex grow flex-col gap-1.5 text-left">
-        <span className="flex w-full items-baseline gap-2">
-          <span className="grow text-[13px] font-medium">{category.title}</span>
-          <span className="text-[13px] font-semibold whitespace-nowrap tabular-nums">{formatBytes(shown.bytes)}</span>
+        <span className="flex w-full flex-wrap items-baseline gap-x-2">
+          <span className="min-w-28 grow basis-0 text-[13px] font-medium">{category.title}</span>
+          <span className="ml-auto text-[13px] font-semibold whitespace-nowrap tabular-nums">{sizeLabel(group, progressed)}</span>
         </span>
         <span className="flex w-full items-center gap-2">
           <SectionBar group={group} max={max} progressed={progressed} />
@@ -444,8 +450,10 @@ function sectionsOf(heads: readonly CategoryHead[], totals: readonly {id: string
 interface Shaping {
   totals: readonly SectionTotal[]
   shadow: ReadonlyMap<string, number>
-  picked: ReadonlyMap<string, number> | null
+  picked: Pick<Selection, 'picked' | 'pickedBytes'> | null
 }
+
+const NO_BYTES: Bytes = {exact: 0, apparent: 0}
 
 function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shaping): Group[] {
   const byId = new Map(totals.map(total => [total.id, total]))
@@ -454,7 +462,8 @@ function groupsOf(sections: readonly Section[], {totals, shadow, picked}: Shapin
       const total = byId.get(category.id)
       if (!total || total.count === 0) return []
       const bytes = total.bytes - (shadow.get(category.id) ?? 0)
-      return [{category, shown: {count: total.count, bytes, selectable: total.selectable, aged: total.aged, picked: picked === null ? total.picked : (picked.get(category.id) ?? 0)}}]
+      const chosen = picked === null ? {count: total.picked, bytes: {exact: total.pickedExact, apparent: total.pickedApparent}} : {count: picked.picked.get(category.id) ?? 0, bytes: picked.pickedBytes.get(category.id) ?? NO_BYTES}
+      return [{category, shown: {count: total.count, bytes, selectable: total.selectable, aged: total.aged, picked: chosen.count, pickedBytes: chosen.bytes}}]
     }),
   )
 }
@@ -507,7 +516,7 @@ export function useListing(db: Db, list: CleanupSearch, selection: Selection): L
   const shadow = useMemo(() => shadowOf(db, keep), [db, keep, items, nests])
   const listed = useMemo(() => new Set(sections.filter(section => section.count > 0).map(section => section.id)), [sections])
   const choose: Choose = (section, wanted) => selection.setRowSelection(old => chosen(db, section, keep, wanted, old))
-  return {list, groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection.picked}), listed, rows, choose, search}
+  return {list, groups: groupsOf(sections, {totals, shadow, picked: filtering ? null : selection}), listed, rows, choose, search}
 }
 
 function Body({groups, list, progressed, choose, children}: {groups: Group[]; list: CleanupSearch; progressed: Progressed | null; choose: Choose; children: ReactNode}) {
