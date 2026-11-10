@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "mopper",
-  "description": "Claude Code plugins for keeping a Mac disk in check.",
+  "description": "Claude Code plugins for keeping a disk in check on macOS, Linux and Windows.",
   "owner": {
     "name": "Omri Katz",
     "url": "https://github.com/omridevk"
@@ -11,7 +11,8 @@
       "name": "disk-clean",
       "description": "Find reclaimable disk space on macOS, Linux and Windows, review every item in a browser UI, then delete only what you approve.",
       "source": "./plugins/disk-clean",
-      "category": "productivity"
+      "category": "productivity",
+      "tags": ["disk-space", "cleanup", "trash", "node-modules", "git-worktree", "macos", "linux", "windows"]
     }
   ]
 }
