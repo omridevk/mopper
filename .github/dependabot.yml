@@ -7,7 +7,7 @@ updates:
     cooldown:
       default-days: 7
   - package-ecosystem: cargo
-    directory: /plugins/disk-clean/cli
+    directory: /disk-clean/cli
     schedule:
       interval: weekly
     cooldown:

@@ -8,7 +8,7 @@ importers:
 
   .: {}
 
-  plugins/disk-clean/web:
+  disk-clean/web:
     dependencies:
       '@base-ui/react':
         specifier: 1.8.0

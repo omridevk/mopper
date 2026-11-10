@@ -20,7 +20,7 @@ const walks = new Map<string, Walk>()
 
 function binary() {
   const found = ['release', 'debug'].map(kind => join(CLI, kind, 'disk-clean')).find(path => existsSync(path))
-  if (!found) throw new Error('build the CLI first: cargo build --release in plugins/disk-clean/cli')
+  if (!found) throw new Error('build the CLI first: cargo build --release in disk-clean/cli')
   return found
 }
 

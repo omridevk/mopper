@@ -9,7 +9,7 @@ and show everything the scan already learns about the disk, not only the cleanup
 
 - Stack: Vite, React 19, shadcn on Base UI, Tailwind v4, `@tanstack/charts` (pinned, alpha).
   No TanStack Start: the Rust binary is the server, the page is one static file.
-- Delivery: `plugins/disk-clean/web/` builds one self-contained `cli/assets/page.html`
+- Delivery: `disk-clean/web/` builds one self-contained `cli/assets/page.html`
   (vite-plugin-singlefile). The built file is committed so `cargo build` needs no Node.
   CI rebuilds it and fails when the committed file differs.
 - Data handoff: the page holds `<script id="disk-clean-data" type="application/json">__DATA__</script>`

@@ -30,6 +30,6 @@ does not call `useEffect` / `useLayoutEffect`.
 
 ## Done when
 
-`git grep -n "useEffect\|useLayoutEffect" -- 'plugins/disk-clean/web/src' ':!*.test.*'` returns
+`git grep -n "useEffect\|useLayoutEffect" -- 'disk-clean/web/src' ':!*.test.*'` returns
 nothing, an oxlint/eslint rule (`no-restricted-imports` / `no-restricted-syntax` for both hooks)
 fails the build if one comes back, and every browser test passes with the same meaning.

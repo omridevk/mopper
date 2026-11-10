@@ -47,11 +47,11 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: sfw cargo fetch --locked
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: |
           crates=$(grep -c '^name = ' Cargo.lock)
           blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
@@ -63,13 +63,13 @@ jobs:
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - name: build both architectures
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: |
           cargo build --release --frozen --target aarch64-apple-darwin
           cargo build --release --frozen --target x86_64-apple-darwin
       - name: package universal binary
         run: |
-          target=plugins/disk-clean/cli/target
+          target=disk-clean/cli/target
           mkdir -p dist
           lipo -create -output dist/disk-clean \
             "$target/aarch64-apple-darwin/release/disk-clean" \
@@ -130,11 +130,11 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: sfw cargo fetch --locked
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: |
           crates=$(grep -c '^name = ' Cargo.lock)
           blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
@@ -146,7 +146,7 @@ jobs:
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - name: build static binary
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --frozen --target "$TARGET"
@@ -154,7 +154,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          info=$(file "plugins/disk-clean/cli/target/$TARGET/release/disk-clean")
+          info=$(file "disk-clean/cli/target/$TARGET/release/disk-clean")
           echo "$info"
           case "$info" in
             *"statically linked"* | *"static-pie linked"*) ;;
@@ -169,7 +169,7 @@ jobs:
           ASSET: disk-clean-${{ matrix.asset }}.tar.gz
         run: |
           mkdir -p dist
-          cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean" dist/disk-clean
+          cp "disk-clean/cli/target/$TARGET/release/disk-clean" dist/disk-clean
           chmod 755 dist/disk-clean
           tar -czf "dist/$ASSET" -C dist disk-clean
           cd dist
@@ -218,13 +218,13 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: sfw cargo fetch --locked
         env:
           CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: |
           crates=$(grep -c '^name = ' Cargo.lock)
           blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
@@ -236,20 +236,20 @@ jobs:
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - name: build binary with the static C runtime
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --frozen --target "$TARGET"
       - name: binary does not import the C runtime DLLs
         run: |
-          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
+          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
             echo "::error::disk-clean for $TARGET imports the dynamic C runtime"
             exit 1
           fi
       - name: package binary
         run: |
           mkdir -p dist
-          cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
+          cp "disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
           powershell -NoProfile -Command "Compress-Archive -LiteralPath dist/disk-clean.exe -DestinationPath dist/$ASSET"
           cd dist
           printf '%s  %s\n' "$(sha256sum "$ASSET" | cut -c1-64)" "$ASSET" > "$ASSET.sha256"
@@ -297,13 +297,13 @@ jobs:
           echo "$dir" >> "$GITHUB_PATH"
           echo "SFW_JSON_REPORT_PATH=$RUNNER_TEMP/sfw-report.json" >> "$GITHUB_ENV"
       - name: fetch crates through Socket Firewall
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: sfw cargo fetch --locked
         env:
           CARGO_HTTP_CHECK_REVOKE: "false"
       - name: Socket Firewall report
         if: ${{ !cancelled() }}
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         run: |
           crates=$(grep -c '^name = ' Cargo.lock)
           blocked=$(jq '.blocked // [] | length' "$SFW_JSON_REPORT_PATH")
@@ -315,20 +315,20 @@ jobs:
           jq . "$SFW_JSON_REPORT_PATH"
           [ "$blocked" = 0 ] && [ "$unparsed" = 0 ]
       - name: build binary with the static C runtime
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --frozen --target "$TARGET"
       - name: binary does not import the C runtime DLLs
         run: |
-          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
+          if grep -aqiE 'vcruntime140|api-ms-win-crt-' "disk-clean/cli/target/$TARGET/release/disk-clean.exe"; then
             echo "::error::disk-clean for $TARGET imports the dynamic C runtime"
             exit 1
           fi
       - name: package binary
         run: |
           mkdir -p dist
-          cp "plugins/disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
+          cp "disk-clean/cli/target/$TARGET/release/disk-clean.exe" dist/disk-clean.exe
           powershell -NoProfile -Command "Compress-Archive -LiteralPath dist/disk-clean.exe -DestinationPath dist/$ASSET"
           cd dist
           printf '%s  %s\n' "$(sha256sum "$ASSET" | cut -c1-64)" "$ASSET" > "$ASSET.sha256"

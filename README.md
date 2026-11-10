@@ -151,10 +151,10 @@ with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
 
 ## Development
 
-The CLI source lives in `plugins/disk-clean/cli` (Rust 1.93, edition 2024).
+The CLI source lives in `disk-clean/cli` (Rust 1.93, edition 2024).
 
 ```bash
-cd plugins/disk-clean/cli
+cd disk-clean/cli
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
@@ -167,16 +167,16 @@ claude plugin validate --strict ./plugins/disk-clean
 
 The tests build every fixture in a temp folder. Deletion is only ever exercised there.
 
-The review page is a React app in `plugins/disk-clean/web` (Vite, shadcn on Base UI, Tailwind,
+The review page is a React app in `disk-clean/web` (Vite, shadcn on Base UI, Tailwind,
 TanStack Charts). `pnpm run build` there writes the single self-contained
-`plugins/disk-clean/cli/assets/page.html` that the binary embeds; commit it with any web change
+`disk-clean/cli/assets/page.html` that the binary embeds; commit it with any web change
 (CI fails when it is stale). Cargo builds never need Node.
 
 ```bash
 pnpm install
-cd plugins/disk-clean/web
+cd disk-clean/web
 pnpm test            # browser tests, headless Chromium
-pnpm run build       # rebuilds cli/assets/page.html
+pnpm run build       # rebuilds ../cli/assets/page.html
 pnpm dev             # needs dev/fixture.json: {"data": <review page data>, "token": "..."}
 ```
 
@@ -184,12 +184,12 @@ Set `DISK_CLEAN_REVIEW_URL` to a running `disk-clean review` server to proxy `/p
 `/decide` to it during `pnpm dev`.
 
 The screenshots and demo GIF in `.github/assets` come from `pnpm run screenshots` in
-`plugins/disk-clean/web`: headless Chromium on a built-in synthetic fixture, `ffmpeg` for the GIF,
+`disk-clean/web`: headless Chromium on a built-in synthetic fixture, `ffmpeg` for the GIF,
 `--gif-only` to skip the screenshots.
 
 ## Releasing
 
-1. Bump `version` in `plugins/disk-clean/.claude-plugin/plugin.json` (and in `cli/Cargo.toml`).
+1. Bump `version` in `plugins/disk-clean/.claude-plugin/plugin.json` (and in `disk-clean/cli/Cargo.toml`).
    Installed copies only update when that string changes, and `run.sh` fetches the binary for it.
 2. Tag with `claude plugin tag ./plugins/disk-clean` (creates `disk-clean--v<version>`) and push the tag.
 3. The `release` workflow checks the tag matches `plugin.json`, builds an arm64 + x86_64 universal

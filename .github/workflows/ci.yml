@@ -20,7 +20,7 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +62,7 @@ jobs:
       - name: shellcheck run.sh
         run: |
           command -v shellcheck >/dev/null || brew install shellcheck
-          shellcheck ../skills/disk-clean/scripts/run.sh
+          shellcheck ../../plugins/disk-clean/skills/disk-clean/scripts/run.sh
       - name: manifests are valid JSON
         working-directory: .
         run: |
@@ -89,7 +89,7 @@ jobs:
             sfw-sha256: c8c80aa582829f24f5d633f2c3f2ccd0b070bbee80bf3b956e5e2a9880184e20
     defaults:
       run:
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -144,7 +144,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -195,7 +195,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: plugins/disk-clean/cli
+        working-directory: disk-clean/cli
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -273,4 +273,4 @@ jobs:
         run: pnpm --filter disk-clean-review exec vitest run --project 'app *'
       - run: pnpm --filter disk-clean-review run build
       - name: committed page.html matches the source
-        run: git diff --exit-code plugins/disk-clean/cli/assets/page.html
+        run: git diff --exit-code disk-clean/cli/assets/page.html

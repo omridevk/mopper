@@ -9,7 +9,7 @@ import {createServer} from 'vite'
 const GB = 1024 ** 3
 const MB = 1024 ** 2
 const HOME = '/Users/you'
-const OUT = fileURLToPath(new URL('../../../../.github/assets/', import.meta.url))
+const OUT = fileURLToPath(new URL('../../../.github/assets/', import.meta.url))
 const DAY = 86_400
 const NOW = 1_790_000_000
 
