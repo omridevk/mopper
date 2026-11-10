@@ -39,40 +39,35 @@ mkdir -p "$data/bin"
 tmp=$(mktemp -d "$data/bin/.install.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-download() {
-  [ -n "$asset" ] || return 1
-  local url="https://github.com/omridevk/mopper/releases/download/disk-clean--v$version/$asset"
-  command -v curl >/dev/null 2>&1 || return 1
-  local sum=(shasum -a 256)
-  command -v sha256sum >/dev/null 2>&1 && sum=(sha256sum)
-  command -v "${sum[0]}" >/dev/null 2>&1 || return 1
-  echo "disk-clean: downloading release v$version..." >&2
-  curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset" "$url" || return 1
-  curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset.sha256" "$url.sha256" || return 1
-  if [ "$(awk '{print $2}' "$tmp/$asset.sha256")" != "$asset" ] ||
-    ! (cd "$tmp" && "${sum[@]}" -c "$asset.sha256" >/dev/null 2>&1); then
-    echo "disk-clean: checksum mismatch on the downloaded v$version release, refusing to run it" >&2
-    exit 1
-  fi
-  tar -xzf "$tmp/$asset" -C "$tmp" disk-clean || return 1
-  mv "$tmp/disk-clean" "$tmp/ready"
+releases=https://github.com/omridevk/mopper/releases
+supported="macOS (arm64 and x86_64), Linux (x86_64 and arm64) and Windows (x86_64 and arm64)"
+
+fail() {
+  echo "disk-clean: $1" >&2
+  echo "  Release binaries exist for $supported:" >&2
+  echo "  $releases" >&2
+  exit 1
 }
 
-build() {
-  command -v cargo >/dev/null 2>&1 || return 1
-  echo "disk-clean: no release download for v$version, building from source with cargo (first run only)..." >&2
-  CARGO_TARGET_DIR="$data/target" cargo build --release --locked \
-    --manifest-path "$plugin_root/cli/Cargo.toml" >&2 || return 1
-  cp "$data/target/release/disk-clean" "$tmp/ready"
-}
+[ -n "$asset" ] || fail "no release binary for $(uname -s)/$(uname -m)."
+command -v curl >/dev/null 2>&1 || fail "curl is needed to download the v$version release."
+sum=(shasum -a 256)
+command -v sha256sum >/dev/null 2>&1 && sum=(sha256sum)
+command -v "${sum[0]}" >/dev/null 2>&1 || fail "sha256sum or shasum is needed to verify the v$version release."
 
-if ! download && ! build; then
-  echo "disk-clean: could not get the disk-clean binary for v$version." >&2
-  echo "  Either install Rust (https://rustup.rs) so it can be built from source on first run," >&2
-  echo "  or install a plugin version that has a published release:" >&2
-  echo "  https://github.com/omridevk/mopper/releases" >&2
+url="$releases/download/disk-clean--v$version/$asset"
+echo "disk-clean: downloading release v$version..." >&2
+if ! curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset" "$url" ||
+  ! curl --proto '=https' --tlsv1.2 -fsL --retry 2 -o "$tmp/$asset.sha256" "$url.sha256"; then
+  fail "could not download $asset for v$version (no published release for this version, or no network)."
+fi
+if [ "$(awk '{print $2}' "$tmp/$asset.sha256")" != "$asset" ] ||
+  ! (cd "$tmp" && "${sum[@]}" -c "$asset.sha256" >/dev/null 2>&1); then
+  echo "disk-clean: checksum mismatch on the downloaded v$version release, refusing to run it" >&2
   exit 1
 fi
+tar -xzf "$tmp/$asset" -C "$tmp" disk-clean || fail "could not unpack $asset for v$version."
+mv "$tmp/disk-clean" "$tmp/ready"
 
 chmod 755 "$tmp/ready"
 mv -f "$tmp/ready" "$bin"

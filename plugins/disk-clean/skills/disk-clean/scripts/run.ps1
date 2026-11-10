@@ -67,15 +67,27 @@ function Save-Url([string]$Url, [string]$OutFile) {
   return $false
 }
 
-function Get-Release {
-  if ($asset -eq '') { return $false }
-  $url = "https://github.com/omridevk/mopper/releases/download/disk-clean--v$version/$asset"
+$releases = 'https://github.com/omridevk/mopper/releases'
+
+function Stop-Install([string]$Message) {
+  Write-Stderr "disk-clean: $Message"
+  Write-Stderr '  Release binaries exist for macOS (arm64 and x86_64), Linux (x86_64 and arm64) and Windows (x86_64 and arm64):'
+  Write-Stderr "  $releases"
+  exit 1
+}
+
+try {
+  if ($asset -eq '') {
+    Stop-Install "no release binary for Windows/$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)."
+  }
+  $url = "$releases/download/disk-clean--v$version/$asset"
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor
     [Net.SecurityProtocolType]::Tls12
   Write-Stderr "disk-clean: downloading release v$version..."
   $zip = Join-Path $tmp $asset
-  if (-not (Save-Url $url $zip)) { return $false }
-  if (-not (Save-Url "$url.sha256" "$zip.sha256")) { return $false }
+  if (-not (Save-Url $url $zip) -or -not (Save-Url "$url.sha256" "$zip.sha256")) {
+    Stop-Install "could not download $asset for v$version (no published release for this version, or no network)."
+  }
   $fields = @(([System.IO.File]::ReadAllText("$zip.sha256").Trim()) -split '\s+')
   if ($fields.Count -ne 2 -or $fields[1] -cne $asset -or
     $fields[0] -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash) {
@@ -86,39 +98,7 @@ function Get-Release {
     Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $tmp 'unzip')
     Move-Item -LiteralPath (Join-Path $tmp 'unzip\disk-clean.exe') -Destination $ready
   } catch {
-    return $false
-  }
-  return $true
-}
-
-function Build-Source {
-  if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { return $false }
-  Write-Stderr "disk-clean: no release download for v$version, building from source with cargo (first run only)..."
-  $previous = $env:CARGO_TARGET_DIR
-  $env:CARGO_TARGET_DIR = Join-Path $data 'target'
-  try {
-    & cargo build --release --locked --manifest-path (Join-Path $pluginRoot 'cli\Cargo.toml') |
-      ForEach-Object { Write-Stderr $_ }
-    $built = $LASTEXITCODE -eq 0
-  } finally {
-    $env:CARGO_TARGET_DIR = $previous
-  }
-  if (-not $built) { return $false }
-  try {
-    Copy-Item -LiteralPath (Join-Path $data 'target\release\disk-clean.exe') -Destination $ready
-  } catch {
-    return $false
-  }
-  return $true
-}
-
-try {
-  if (-not (Get-Release) -and -not (Build-Source)) {
-    Write-Stderr "disk-clean: could not get the disk-clean binary for v$version."
-    Write-Stderr '  Either install Rust (https://rustup.rs) so it can be built from source on first run,'
-    Write-Stderr '  or install a plugin version that has a published release:'
-    Write-Stderr '  https://github.com/omridevk/mopper/releases'
-    exit 1
+    Stop-Install "could not unpack $asset for v$version."
   }
   try {
     [System.IO.File]::Move($ready, $bin)
