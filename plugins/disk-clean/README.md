@@ -24,7 +24,8 @@ claude plugin marketplace add omridevk/mopper
 claude plugin install disk-clean@mopper
 ```
 
-Requirements: macOS, Linux or Windows, and `git`. Rust only if building from source.
+Requirements: macOS (arm64 or x86_64), Linux (x86_64 or arm64) or Windows (x86_64 or arm64), and
+`git`.
 
 ## Use
 
@@ -42,12 +43,13 @@ no argument, scans every fixed drive.
 - **Binary download.** The skill runs one `disk-clean` binary through `scripts/run.sh`
   (`scripts/run.ps1` on Windows). On first use it downloads the release for the installed plugin
   version from [GitHub releases](https://github.com/omridevk/mopper/releases), checks its sha256,
-  and refuses to run it on a mismatch. If no release exists for that version, it builds the bundled
-  Rust source with `cargo build --release --locked` instead (cargo may fetch the locked crates from
-  crates.io). The binary is cached in the plugin data folder.
+  and refuses to run it on a mismatch. If no release exists for that version or platform, it stops
+  with an error naming the supported platforms and the releases page. The binary is cached in the
+  plugin data folder. Its source is in the
+  [same repository](https://github.com/omridevk/mopper/tree/main/disk-clean).
 - **Local review page.** The binary serves the page on `127.0.0.1` on a random port and opens it in
   your default browser. It answers only requests addressed to `127.0.0.1` or `localhost`, and
-  every change needs the page's own origin and a random per-session token.
+  every change needs the page's own origin and a random per-session value.
 - **Moves to the Trash.** Only the items you approve are moved: to the macOS Trash, the
   freedesktop.org Trash on Linux, or the Recycle Bin on Windows, so Undo works until the Trash is
   emptied. **Delete immediately…** is optional, skips the Trash, says "can't be undone" first, and
@@ -58,16 +60,17 @@ no argument, scans every fixed drive.
 - **Fixed commands.** Only three commands can ever run, by fixed id, and only if you tick them:
   `xcrun simctl delete unavailable` and `brew cleanup --prune=all -s` (macOS only), and
   `docker system prune -f` (dangling only, never named volumes).
-- **Network.** Nothing is sent anywhere. The only network access is the binary download above
-  (or the cargo fallback). The page is a single self-contained file served by the binary.
+- **Network.** Nothing is sent anywhere. The only network access is the binary download above.
+  The page is a single self-contained file served by the binary.
 
 ## Safety
 
 - Only paths from that run's scan can be deleted. Paths must be canonical; anything with `//`,
   `.`, `..` or a trailing `/` is rejected.
 - `$HOME` itself, everything outside `$HOME` except the temp folders, and personal folders such as
-  `Documents`, `Desktop`, `Pictures`, `.ssh`, `.gnupg`, `.aws`, `.claude` and keychains are
-  hard-blocked.
+  `Documents`, `Desktop` and `Pictures`, and personal and security folders (SSH, GPG and cloud
+  config, keychains) are never touched: disk-clean only counts their size for the storage map,
+  never reads the files in them, and refuses to delete them.
 - Right before each removal the path is resolved again; a path whose parent was swapped for a
   symlink is kept and logged.
 - A worktree is removed only when every check passes again right before removal: a clean
@@ -83,7 +86,7 @@ no argument, scans every fixed drive.
   directories are kept for audit and are safe to delete.
 - Every item moved to the Trash is recorded in `~/.cache/disk-clean/trashed.jsonl`, which Undo and
   Empty act on. Items removed with Delete immediately are not recorded.
-- The binary and any cargo build output live in the plugin data folder.
+- The binary lives in the plugin data folder.
 
 ## Links
 

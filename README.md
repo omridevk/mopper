@@ -67,7 +67,7 @@ Then ask Claude to "clean up my disk", or run `/disk-clean`.
 
 Update with `claude plugin update disk-clean@mopper`.
 
-Requirements: macOS, Linux or Windows, and `git`. Rust only if building from source.
+Requirements: macOS, Linux or Windows on one of the platforms below, and `git`.
 
 ## Features
 
@@ -122,7 +122,8 @@ deletes only those items for good, after its own confirm.
 ## Safety
 
 - Only paths from that run's scan can be deleted.
-- `Documents`, `Desktop`, `.ssh`, keychains and other personal folders are hard-blocked.
+- `Documents`, `Desktop` and other personal folders, and security folders (SSH, GPG and cloud
+  config, keychains), are never touched.
 - There is no `sudo`, and nothing asks for administrator rights.
 - Git worktrees are removed only with `git worktree remove` (never `--force`), and only after every
   check passes again right before removal:
@@ -146,8 +147,9 @@ deletes only those items for good, after its own confirm.
 The skill runs a single `disk-clean` binary through `scripts/run.sh` (`scripts/run.ps1` on
 Windows). On first use it downloads the release built for the installed plugin version from
 [GitHub releases](https://github.com/omridevk/mopper/releases), checks its sha256, and caches it
-in the plugin data folder. If no release exists for that version, it builds the bundled source
-with `cargo build --release --locked` instead (needs [Rust](https://rustup.rs)).
+in the plugin data folder. If no release exists for that version or platform, it stops with an
+error naming the supported platforms and the releases page. The plugin folder ships no source:
+the CLI and the review page live in `disk-clean/` at the repository root.
 
 ## Development
 

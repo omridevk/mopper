@@ -1,6 +1,6 @@
 ---
-name: disk-clean
-description: Find reclaimable disk space on this computer (macOS, Linux or Windows), show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items go to the Trash: the macOS Trash, the freedesktop.org Trash on Linux or the Recycle Bin on Windows, so they can be undone until the Trash is emptied). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean.
+name: "disk-clean"
+description: "Find reclaimable disk space on this computer (macOS, Linux or Windows), show a browser UI listing exactly what will be deleted, and run the approved cleanup in the background (approved items go to the Trash: the macOS Trash, the freedesktop.org Trash on Linux or the Recycle Bin on Windows, so they can be undone until the Trash is emptied). Use when the user asks to clean up disk space, free space, find what is eating the disk, or invokes /disk-clean."
 ---
 
 # Disk Clean
@@ -11,10 +11,10 @@ scan. Never skip the review — nothing is deleted without an explicit approval 
 every approved cleanup yourself, after showing its dry run.
 
 Every stage goes through one launcher. It runs the `disk-clean` binary for this plugin version,
-fetching it on first use (the published release, checksum-verified, or a `cargo build` from the
-bundled source when no release exists). The first run may print a download or build line on
-stderr. Each command is shown twice: for the Bash tool (`run.sh`, which hands off to `run.ps1`
-under Git Bash on Windows) and for Claude Code's PowerShell tool on Windows (`run.ps1`).
+fetching it on first use (the published GitHub release for this version, checksum-verified). The
+first run may print a download line on stderr; when no release exists for this version or
+platform it exits non-zero with the supported platforms and the releases URL. Each command is
+shown twice: for the Bash tool (`run.sh`, which hands off to `run.ps1` under Git Bash on Windows) and for Claude Code's PowerShell tool on Windows (`run.ps1`).
 
 ## Stages 1 and 2 — Scan and review
 
@@ -54,9 +54,9 @@ are never in it), `map.tsv` (size tree), `disk.tsv` (volume
 totals, snapshot count, and `too_deep`: folders nested too deep to read, also reported on stderr),
 `index.tsv` (every folder of at least 10 MB, any depth, for the Storage tab), `insights.json` (home files by modified day, age per folder, kind, and the largest files), and one
 numbered decision per approval: `decisions/<n>.json` (the selection, its mode and the plan the
-confirm dialog showed) and a working folder `decisions/<n>/` for its cleanup. `session.json` (port,
-token, pid) exists while the session is open. `clean.log` and `clean.events` are the one log of
-record for the whole session: every approval, cleanup, Undo and Empty, from the page or the
+confirm dialog showed) and a working folder `decisions/<n>/` for its cleanup. `session.json` (the
+session's port, process id and random per-session value) exists while the session is open.
+`clean.log` and `clean.events` are the one log of record for the whole session: every approval, cleanup, Undo and Empty, from the page or the
 terminal, is appended to both.
 
 `HOME` is resolved to its real path once at startup and that path is used everywhere (scan, map,
@@ -109,7 +109,7 @@ The page has four tabs, a summary strip (disk donut, selected total, scan status
   and the movie are `?overlay=progress` / `?overlay=movie`. The ticked items are in the address too:
   `add` and `drop` hold only the changes from the recommended selection. Escape closes a dialog by
   going back to the address it was opened from. The local server answers every page address with
-  the same page and token.
+  the same page and per-session value.
 - **Clear selection** and **Reset to recommended** (footer, beside the "N items selected · X"
   count) do what the `d` and `r` shortcuts do. Each is disabled only when it would change nothing,
   and then its name says why. They are hidden while a cleanup runs.
@@ -326,12 +326,12 @@ clean `git status` including untracked files, not locked, no process has its cwd
 merge/rebase/cherry-pick/revert/bisect in progress, no submodules, no worktree-only refs, on a
 named branch (or a detached HEAD some ref contains), no commit in its HEAD reflog that no
 branch/tag/remote/stash holds, and every git-ignored file is known build output (`node_modules`,
-`dist`, `.turbo`, caches, ...). Anything else, such as `.env`, `.idea` or plan folders, keeps it. Idle for
+`dist`, `.turbo`, caches, ...). Anything else, such as local environment files, `.idea` or plan folders, keeps it. Idle for
 `DISK_CLEAN_WORKTREE_IDLE_DAYS` (default 2) means preselected. Everything else is listed report-only
 with the reason. Removal re-runs every check per worktree, then calls `git worktree remove` without
 `--force`, so git itself refuses anything dirty. Only the folder goes. The branch and all commits
-stay, and `git worktree add <path> <branch>` restores it. The safety tests live in the plugin's
-`cli/tests` and run with `cargo test`.
+stay, and `git worktree add <path> <branch>` restores it. The safety tests live in the
+repository's `disk-clean/cli/tests` and run with `cargo test`.
 
 ## Safety rules
 
@@ -342,13 +342,15 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
   rejected, never normalised.
 - Hard-blocked regardless of selection: `$HOME` itself and every folder above it, anything outside
   `$HOME` other than `/private/tmp` entries and the per-user `$TMPDIR` tree, and
-  `Documents`, `Desktop`, `Pictures`, `Movies`, `Music`, `.ssh`, `.gnupg`, `.aws`, `.kube`,
-  `.claude`, `Library/Mail`, `Library/Messages`, Keychains (names matched case-insensitively). On
-  Linux the temp folders are `/tmp` and `/var/tmp`, and the protected folders are the XDG user
-  folders read from `~/.config/user-dirs.dirs` (Desktop, Documents, Pictures, Music, Videos,
-  Templates, Public, under their localized names and their English ones), `.ssh`, `.gnupg`, `.aws`,
-  `.kube`, `.claude`, keyrings, KWallet, `.password-store`, `.pki`, browser and mail profiles,
-  `.docker`, `.android` and Hugging Face tokens. These
+  `Documents`, `Desktop`, `Pictures`, `Movies`, `Music`, `.claude`, `Library/Mail`,
+  `Library/Messages`, and the personal and security folders (SSH, GPG, cloud and Kubernetes config,
+  keychains), names matched case-insensitively. On Linux the temp folders are `/tmp` and
+  `/var/tmp`, and the protected folders are the XDG user
+  folders (Desktop, Documents, Pictures, Music, Videos, Templates, Public, under their localized
+  names and their English ones) and the personal and security folders: SSH, GPG, cloud, Kubernetes,
+  Docker, Android and Hugging Face config, `.claude`, keyrings, KWallet, password stores,
+  certificate stores, and browser and mail profiles. disk-clean only counts their size for the
+  storage map and refuses to delete them; it never reads the files in them. These
   protections apply even when `$HOME` itself lives inside the temp folders. Rejects land in
   `$RUN_DIR/rejected`.
 - Right before each removal (files, folders and worktrees alike) the path is resolved again: its
@@ -360,8 +362,9 @@ stay, and `git worktree add <path> <branch>` restores it. The safety tests live 
 - Worktrees are never deleted directly: they are only removed with `git worktree remove`
   after a fresh re-check. A worktree that changed after the scan is kept and logged as `KEPT`.
 - The review page answers only requests addressed to `127.0.0.1:<port>` or `localhost:<port>`;
-  changes also need a JSON body from the page's own origin and its token (`stop` reads it from the
-  owner-only `session.json`). The only changes to the Trash are Undo and Empty (`POST /undo`,
+  changes also need a JSON body from the page's own origin carrying the random per-session value
+  the page was served with (`stop` takes it from the owner-only `session.json`, and nothing leaves
+  the machine). The only changes to the Trash are Undo and Empty (`POST /undo`,
   `POST /empty`), which also require the page's `Origin` and act only on ids in the Trash record.
   Approving never deletes anything: you run each decision with `clean`.
 - No `sudo`, ever. System-level caches under `/Library` and `/private/var` are out of scope.
